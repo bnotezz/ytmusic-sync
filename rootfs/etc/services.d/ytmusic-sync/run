@@ -1,0 +1,13 @@
+#!/usr/bin/with-contenv sh
+set -eu
+
+SCHEDULE="${SYNC_SCHEDULE:-0 3 * * 0}"
+
+echo "[service] schedule: ${SCHEDULE}"
+echo "[service] first sync..."
+gosu abc python /app/sync.py
+
+echo "${SCHEDULE} gosu abc python /app/sync.py >> /config/sync.log 2>&1" | crontab -u root -
+echo "[service] cron started"
+
+exec cron -f

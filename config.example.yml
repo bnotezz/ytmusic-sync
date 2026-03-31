@@ -28,7 +28,5 @@ settings:
   cookies_file:  /config/cookies.txt
   sleep_interval: 2
 
-  # PO Token сервер — адреса bgutil контейнера
-  # Замінити NAS_IP на реальний IP Synology
-  # Або задати через env POT_SERVER_URL в docker-compose.yml
-  pot_server_url: "http://192.168.1.NAS_IP:4416"
+  # Дефолт для bgutil на localhost (порт 4416):
+  pot_server_url: "http://127.0.0.1:4416"

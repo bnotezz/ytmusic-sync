@@ -19,6 +19,16 @@ def log(msg: str):
     print(f"[{ts}] {msg}", flush=True)
 
 
+def normalize_pot_url(raw: str) -> str:
+    """Return empty string for placeholder/invalid PO token URLs from examples."""
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    if "NAS_IP" in value or "ЗАМІНИТИ" in value:
+        return ""
+    return value
+
+
 def load_config(path: str = "/app/config.yml") -> dict:
     with open(path) as f:
         return yaml.safe_load(f)
@@ -29,8 +39,6 @@ def ensure_dirs(*paths):
         Path(p).mkdir(parents=True, exist_ok=True)
 
 
-# ── Playlist IDs ───────────────────────────────────────────────────────────────
-
 def get_playlist_ids(url: str, cookies_file: str | None = None,
                      bgutil_url: str = "") -> list[str]:
     """Отримати поточний список video ID без скачування"""
@@ -39,6 +47,7 @@ def get_playlist_ids(url: str, cookies_file: str | None = None,
         "--print", "%(id)s",
         "--no-warnings",
         "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
         url,
     ]
     if cookies_file and Path(cookies_file).exists():
@@ -52,8 +61,6 @@ def get_playlist_ids(url: str, cookies_file: str | None = None,
     log(f"  Треків у плейлісті: {len(ids)}")
     return ids
 
-
-# ── File ↔ ID mapping ─────────────────────────────────────────────────────────
 
 VIDEOID_RE = re.compile(r'\[([A-Za-z0-9_-]{11})\]\.(opus|m4a|mp3|ogg)$')
 
@@ -69,8 +76,6 @@ def scan_files(output_dir: str) -> dict[str, str]:
     return result
 
 
-# ── Delete removed ─────────────────────────────────────────────────────────────
-
 def delete_removed(current_ids: list[str], on_disk: dict[str, str]) -> int:
     current_set = set(current_ids)
     deleted = 0
@@ -84,8 +89,6 @@ def delete_removed(current_ids: list[str], on_disk: dict[str, str]) -> int:
     return deleted
 
 
-# ── Download ───────────────────────────────────────────────────────────────────
-
 def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
     name        = cfg["name"]
     url         = cfg["url"]
@@ -94,10 +97,9 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
     cookies     = settings.get("cookies_file")
     archive_dir = settings["archive_dir"]
     sleep       = settings.get("sleep_interval", 2)
-    bgutil_url  = (settings.get("pot_server_url") or
-                   os.environ.get("POT_SERVER_URL", "")).strip()
+    bgutil_url  = normalize_pot_url(settings.get("pot_server_url") or
+                                    os.environ.get("POT_SERVER_URL", ""))
 
-    # Окремий архів для yt-dlp (формат "youtube VIDEOID")
     ytdlp_archive = str(Path(archive_dir) / f"{name}.ytdlp.archive")
     out_template  = str(Path(output_dir) /
                         "%(playlist_index)03d - %(title)s [%(id)s].%(ext)s")
@@ -112,43 +114,31 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
     if deleted:
         log(f"  Видалено {deleted} старих треків")
 
-    # ── Cookies ───────────────────────────────────────────────────────────────
-    # Обов'язкові лише для приватних плейлістів.
-    # З bgutil PO token публічні плейлісти скачуються без cookies.
+    # Cookies are needed only for private playlists.
     has_cookies = bool(cookies and Path(cookies).exists())
 
     cmd = [
         "yt-dlp",
-        # JS runtime — обов'язково починаючи з yt-dlp 2025.x
         "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
         "--extract-audio",
-        # Формат: bestaudio (opus на YT) з fallback на будь-який аудіо
         "--format", "bestaudio/best",
         "--audio-format", fmt,
         "--audio-quality", "0",
-        # Обкладинка
         "--embed-thumbnail",
         "--convert-thumbnails", "jpg",
-        # Метадані
         "--embed-metadata",
-        # ── Теги для Music Assistant ──────────────────────────────────────────
         "--parse-metadata", "%(playlist_title)s:%(album)s",
         "--parse-metadata", "%(playlist_index)s:%(track_number)s",
         "--parse-metadata", "%(artist,creator,uploader)s:%(artist)s",
-        # ALBUMARTIST — критично, без нього всі треки у "Various Artists"
         "--parse-metadata", "%(artist,creator,uploader)s:%(albumartist)s",
-        # Очистити DATE — дата завантаження != рік випуску
         "--parse-metadata", ":(?P<meta_date>)",
-        # Безпечні імена для SMB шар на Synology
         "--windows-filenames",
-        # ── Архів і вихід ────────────────────────────────────────────────────
         "--output", out_template,
         "--download-archive", ytdlp_archive,
         "--no-video",
-        # Пропустити недоступні відео (видалені/гео-блок), НЕ зупиняти весь синк
         "--ignore-no-formats-error",
         "--no-abort-on-error",
-        # Ігнорувати недоступні треки (але логувати)
         "--ignore-errors",
         "--sleep-interval",     str(sleep),
         "--max-sleep-interval", str(sleep * 3),
@@ -163,13 +153,12 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
     else:
         log(f"  Cookies: не використовуються (тільки для приватних плейлістів)")
 
-    # ── PO Token ──────────────────────────────────────────────────────────────
     if bgutil_url:
         cmd += ["--extractor-args",
                 f"youtubepot-bgutilhttp:base_url={bgutil_url}"]
         log(f"  PO Token: {bgutil_url}")
     else:
-        log(f"  ⚠  POT_SERVER_URL не вказано — можливі помилки завантаження")
+        log(f"  POT_SERVER_URL: не задано")
 
     log(f"  Скачую нові треки...")
     result = subprocess.run(cmd)
@@ -184,8 +173,6 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
 
     return on_disk_after, current_ids
 
-
-# ── m3u generation ─────────────────────────────────────────────────────────────
 
 def generate_m3u(name: str, current_ids: list[str],
                  on_disk: dict[str, str], playlists_dir: str) -> str:
@@ -212,8 +199,6 @@ def generate_m3u(name: str, current_ids: list[str],
     return str(m3u_path)
 
 
-# ── HA event ───────────────────────────────────────────────────────────────────
-
 def trigger_ha_event():
     ha_url   = os.environ.get("HA_URL", "").rstrip("/")
     ha_token = os.environ.get("HA_TOKEN", "")
@@ -233,8 +218,6 @@ def trigger_ha_event():
     except Exception as e:
         log(f"  HA event skip: {e}")
 
-
-# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
     sep = "═" * 50
