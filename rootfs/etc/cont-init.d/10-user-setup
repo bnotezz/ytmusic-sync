@@ -13,6 +13,8 @@ mkdir -p /config /music /app
 
 # Keep startup fast on NAS with large music libraries: do not chown recursively.
 chown abc:abc /config /music 2>/dev/null || true
+touch /config/sync.log 2>/dev/null || true
+chown abc:abc /config/sync.log 2>/dev/null || true
 
 if [ ! -f /config/config.yml ]; then
   echo "[init] /config/config.yml not found"

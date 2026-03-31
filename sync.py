@@ -10,6 +10,8 @@ import sys
 import yaml
 import json
 import subprocess
+import urllib.request
+import urllib.error
 from pathlib import Path
 from datetime import datetime
 
@@ -29,9 +31,42 @@ def normalize_pot_url(raw: str) -> str:
     return value
 
 
+def check_pot_server(url: str, timeout: int = 5) -> bool:
+    if not url:
+        log("POT server: not configured")
+        return False
+
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            log(f"POT server: reachable ({url})")
+            return True
+    except urllib.error.HTTPError as e:
+        # HTTP error still means service is reachable on network level.
+        log(f"POT server: reachable ({url}), status={e.code}")
+        return True
+    except Exception as e:
+        log(f"POT server: unreachable ({url}) -> {e}")
+        return False
+
+
 def load_config(path: str = "/app/config.yml") -> dict:
-    with open(path) as f:
-        return yaml.safe_load(f)
+    config_env = os.environ.get("YTMUSIC_CONFIG", "").strip()
+    candidates = []
+    if config_env:
+        candidates.append(config_env)
+    if path:
+        candidates.append(path)
+    candidates.append("/config/config.yml")
+
+    for candidate in candidates:
+        if Path(candidate).exists():
+            with open(candidate) as f:
+                return yaml.safe_load(f)
+
+    raise FileNotFoundError(
+        "Config file not found. Checked: " + ", ".join(candidates)
+    )
 
 
 def ensure_dirs(*paths):
@@ -228,6 +263,9 @@ def main():
     cfg      = load_config()
     settings = cfg.get("settings", {})
     ensure_dirs(settings["playlists_dir"], settings["archive_dir"])
+    check_pot_server(normalize_pot_url(
+        settings.get("pot_server_url") or os.environ.get("POT_SERVER_URL", "")
+    ))
 
     errors = []
     for playlist in cfg.get("playlists", []):

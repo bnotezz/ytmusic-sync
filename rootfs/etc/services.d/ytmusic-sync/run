@@ -2,12 +2,23 @@
 set -eu
 
 SCHEDULE="${SYNC_SCHEDULE:-0 3 * * 0}"
+LOG_FILE="/config/sync.log"
+
+touch "$LOG_FILE" 2>/dev/null || true
+chown abc:abc "$LOG_FILE" 2>/dev/null || true
 
 echo "[service] schedule: ${SCHEDULE}"
-echo "[service] first sync..."
-gosu abc python /app/sync.py
+if [ -n "${POT_SERVER_URL:-}" ]; then
+	if curl -sS --max-time 5 -o /dev/null "${POT_SERVER_URL}"; then
+		echo "[service] POT server reachable: ${POT_SERVER_URL}" | tee -a "$LOG_FILE"
+	else
+		echo "[service] POT server UNREACHABLE: ${POT_SERVER_URL}" | tee -a "$LOG_FILE"
+	fi
+fi
+echo "[service] first sync -> ${LOG_FILE}"
+gosu abc python /app/sync.py >> "$LOG_FILE" 2>&1
 
-echo "${SCHEDULE} gosu abc python /app/sync.py >> /config/sync.log 2>&1" | crontab -u root -
+echo "${SCHEDULE} gosu abc python /app/sync.py >> ${LOG_FILE} 2>&1" | crontab -u root -
 echo "[service] cron started"
 
 exec cron -f
