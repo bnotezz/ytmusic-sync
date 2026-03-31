@@ -38,7 +38,7 @@ def get_playlist_ids(url: str, cookies_file: str | None = None,
         "yt-dlp", "--flat-playlist",
         "--print", "%(id)s",
         "--no-warnings",
-        "--js-runtimes", "nodejs",
+        "--js-runtimes", "node",
         url,
     ]
     if cookies_file and Path(cookies_file).exists():
@@ -120,7 +120,7 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
     cmd = [
         "yt-dlp",
         # JS runtime — обов'язково починаючи з yt-dlp 2025.x
-        "--js-runtimes", "nodejs",
+        "--js-runtimes", "node",
         "--extract-audio",
         # Формат: bestaudio (opus на YT) з fallback на будь-який аудіо
         "--format", "bestaudio/best",
