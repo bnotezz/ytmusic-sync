@@ -3,29 +3,38 @@ services:
     build: .
     image: ytmusic-sync:latest
     container_name: ytmusic-sync
+    platform: linux/amd64          # DS720+ = Celeron J4125 = x86_64
     restart: unless-stopped
 
+    # ── Volumes ───────────────────────────────────────────────────────────────
     volumes:
-      # NFS шара або локальна папка на Synology
+      # Конфіги (config.yml + cookies.txt) — редагуй на хості
+      - /volume1/docker/ytmusic-sync/config:/config
+
+      # Музика — або локальний том, або NFS шара
       - /volume1/music/kids:/music
+      # Якщо NFS вже змонтована як /mnt/nfs_music:
+      # - /mnt/nfs_music:/music
 
-      # Конфіг та cookies — редагуй на хості
-      - ./config.yml:/app/config.yml:ro
-      - ./cookies.txt:/app/cookies.txt:ro
-
+    # ── Environment ───────────────────────────────────────────────────────────
     environment:
-      # Cron розклад: хв год день міс доп
-      - SYNC_SCHEDULE=0 3 * * 0       # щонеділі о 03:00
-      # - SYNC_SCHEDULE=0 3 * * *     # щодня о 03:00
+      # PUID/PGID — linuxserver стиль
+      # Знайди свій: SSH → id твій_юзер
+      - PUID=1026
+      - PGID=100
+
+      # Cron (хв год * * день_тижня)
+      - SYNC_SCHEDULE=0 3 * * 0    # щонеділі 03:00
+      # - SYNC_SCHEDULE=0 3 * * *  # щодня 03:00
 
       - TZ=Europe/Kyiv
 
-      # Опціонально: надіслати event в HA після синку
+      # Опціонально: HA event після синку
       # - HA_URL=http://192.168.1.100:8123
-      # - HA_TOKEN=eyJ...
+      # - HA_TOKEN=eyJhbGciOiJ...
 
     logging:
       driver: json-file
       options:
         max-size: "10m"
-        max-files: "3"
+        max-file: "3"              # Synology Docker: max-file БЕЗ 's'
