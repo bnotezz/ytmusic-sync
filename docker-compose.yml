@@ -1,0 +1,31 @@
+services:
+  ytmusic-sync:
+    build: .
+    image: ytmusic-sync:latest
+    container_name: ytmusic-sync
+    restart: unless-stopped
+
+    volumes:
+      # NFS шара або локальна папка на Synology
+      - /volume1/music/kids:/music
+
+      # Конфіг та cookies — редагуй на хості
+      - ./config.yml:/app/config.yml:ro
+      - ./cookies.txt:/app/cookies.txt:ro
+
+    environment:
+      # Cron розклад: хв год день міс доп
+      - SYNC_SCHEDULE=0 3 * * 0       # щонеділі о 03:00
+      # - SYNC_SCHEDULE=0 3 * * *     # щодня о 03:00
+
+      - TZ=Europe/Kyiv
+
+      # Опціонально: надіслати event в HA після синку
+      # - HA_URL=http://192.168.1.100:8123
+      # - HA_TOKEN=eyJ...
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-files: "3"
