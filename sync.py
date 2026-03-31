@@ -130,13 +130,24 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list]:
         "--extract-audio",
         "--audio-format", fmt,
         "--audio-quality", "0",
+        # Обкладинка — WebP конвертується в JPG, потім вбудовується в opus
         "--embed-thumbnail",
-        "--embed-metadata",
-        "--add-metadata",
         "--convert-thumbnails", "jpg",
+        # Метадані — embed-metadata = основний флаг (add-metadata — старий аліас, не потрібен)
+        "--embed-metadata",
+        # ── Маппінг тегів для Music Assistant ────────────────────────────────
+        # ALBUM: назва плейліста як альбом
         "--parse-metadata", "%(playlist_title)s:%(album)s",
+        # TRACKNUMBER: порядковий номер у плейлісті
         "--parse-metadata", "%(playlist_index)s:%(track_number)s",
-        "--parse-metadata", "%(artist,uploader)s:%(artist)s",
+        # ARTIST: з поля artist або uploader
+        "--parse-metadata", "%(artist,creator,uploader)s:%(artist)s",
+        # ALBUMARTIST: КРИТИЧНО для MA — без нього треки йдуть у "Various Artists"
+        "--parse-metadata", "%(artist,creator,uploader)s:%(albumartist)s",
+        # DATE: очищаємо дату завантаження (не є роком випуску, ламає сортування в MA)
+        "--parse-metadata", ":(?P<meta_date>)",
+        # Безпечні імена файлів для NAS/Windows-сумісних шар
+        "--windows-filenames",
         "--output", out_template,
         "--download-archive", archive_path,
         "--no-video",
