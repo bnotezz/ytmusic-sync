@@ -1,32 +1,34 @@
 # ytmusic-sync — конфігурація
-# Збережи як /volume1/docker/ytmusic-sync/config/config.yml
+# Зберегти як /volume1/docker/ytmusic-sync/config/config.yml
 
 playlists:
   - name: tales
-    url: "https://music.youtube.com/playlist?list=PLR8OfFTQ5xtA8HV5ZDrSrbgbfGCZaKXlp"
+    url: "https://music.youtube.com/playlist?list=PLR8OfFTQ5xtB7Wde5Ix_ah9Dj2U3jIJTG"
     output_dir: /music/tales
-    format: opus        # opus = нативний YT, без re-encode (рекомендовано)
+    format: opus
 
   - name: lullabies
-    url: "https://music.youtube.com/playlist?list=ЗАМІНИТИ_НА_СВІЙ_ID"
+    url: "https://music.youtube.com/playlist?list=ЗАМІНИТИ"
     output_dir: /music/lullabies
     format: opus
 
   - name: party
-    url: "https://music.youtube.com/playlist?list=ЗАМІНИТИ_НА_СВІЙ_ID"
+    url: "https://music.youtube.com/playlist?list=ЗАМІНИТИ"
     output_dir: /music/party
     format: opus
 
+  - name: morning
+    url: "https://music.youtube.com/playlist?list=PLR8OfFTQ5xtDMXwyT55-B7POEwW1cFyG9"
+    output_dir: /music/morning
+    format: opus
+
 settings:
-  # Куди писати .m3u (Music Assistant читає звідси)
   playlists_dir: /music/playlists
-
-  # Де зберігати список вже скачаних треків
-  archive_dir: /music/.sync
-
-  # Cookies для приватних плейлістів (опціонально)
-  # Файл: /volume1/docker/ytmusic-sync/config/cookies.txt
-  cookies_file: /config/cookies.txt
-
-  # Затримка між треками (секунди) — захист від rate-limit
+  archive_dir:   /music/.sync
+  cookies_file:  /config/cookies.txt
   sleep_interval: 2
+
+  # PO Token сервер — адреса bgutil контейнера
+  # Замінити NAS_IP на реальний IP Synology
+  # Або задати через env POT_SERVER_URL в docker-compose.yml
+  pot_server_url: "http://192.168.1.NAS_IP:4416"

@@ -29,17 +29,23 @@ def ensure_dirs(*paths):
         Path(p).mkdir(parents=True, exist_ok=True)
 
 
-# ── Playlist info ──────────────────────────────────────────────────────────────
+# ── Playlist IDs ───────────────────────────────────────────────────────────────
 
-def get_playlist_ids(url: str, cookies_file: str | None = None) -> list[str]:
+def get_playlist_ids(url: str, cookies_file: str | None = None,
+                     bgutil_url: str = "") -> list[str]:
     """Отримати поточний список video ID без скачування"""
     cmd = [
         "yt-dlp", "--flat-playlist",
         "--print", "%(id)s",
-        "--no-warnings", url
+        "--no-warnings",
+        "--js-runtimes", "nodejs",
+        url,
     ]
     if cookies_file and Path(cookies_file).exists():
         cmd += ["--cookies", cookies_file]
+    if bgutil_url:
+        cmd += ["--extractor-args",
+                f"youtubepot-bgutilhttp:base_url={bgutil_url}"]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     ids = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
@@ -47,50 +53,29 @@ def get_playlist_ids(url: str, cookies_file: str | None = None) -> list[str]:
     return ids
 
 
-# ── Archive ────────────────────────────────────────────────────────────────────
+# ── File ↔ ID mapping ─────────────────────────────────────────────────────────
 
-def load_archive(path: str) -> dict[str, str]:
-    """Повертає {video_id: абсолютний шлях до файлу}"""
-    archive = {}
-    if not Path(path).exists():
-        return archive
-    with open(path) as f:
-        for line in f:
-            parts = line.strip().split("\t", 1)
-            if len(parts) == 2:
-                archive[parts[0]] = parts[1]
-    return archive
+VIDEOID_RE = re.compile(r'\[([A-Za-z0-9_-]{11})\]\.(opus|m4a|mp3|ogg)$')
 
 
-def save_archive(path: str, archive: dict):
-    with open(path, "w") as f:
-        for vid_id, filepath in archive.items():
-            f.write(f"{vid_id}\t{filepath}\n")
-
-
-def rebuild_archive(output_dir: str, archive_path: str) -> dict[str, str]:
-    """Відновити archive зі скачаних файлів по [videoID] в імені"""
-    archive = {}
-    pattern = re.compile(r'\[([A-Za-z0-9_-]{11})\]\.(opus|m4a|mp3|ogg)$')
+def scan_files(output_dir: str) -> dict[str, str]:
+    """Повертає {video_id: абсолютний шлях} за файлами на диску"""
+    result = {}
     for f in Path(output_dir).iterdir():
         if f.is_file():
-            m = pattern.search(f.name)
+            m = VIDEOID_RE.search(f.name)
             if m:
-                archive[m.group(1)] = str(f)
-    save_archive(archive_path, archive)
-    return archive
+                result[m.group(1)] = str(f)
+    return result
 
 
 # ── Delete removed ─────────────────────────────────────────────────────────────
 
-def delete_removed(current_ids: list, archive: dict, output_dir: str) -> int:
-    """Видалити файли треків яких більше немає в плейлісті"""
+def delete_removed(current_ids: list[str], on_disk: dict[str, str]) -> int:
     current_set = set(current_ids)
-    to_delete = [vid for vid in list(archive) if vid not in current_set]
     deleted = 0
-    for vid in to_delete:
-        fp = archive.pop(vid, None)
-        if fp and Path(fp).exists():
+    for vid, fp in list(on_disk.items()):
+        if vid not in current_set:
             log(f"  🗑  Видаляю: {Path(fp).name}")
             Path(fp).unlink(missing_ok=True)
             for ext in (".jpg", ".png", ".webp"):
@@ -101,7 +86,7 @@ def delete_removed(current_ids: list, archive: dict, output_dir: str) -> int:
 
 # ── Download ───────────────────────────────────────────────────────────────────
 
-def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list]:
+def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
     name        = cfg["name"]
     url         = cfg["url"]
     output_dir  = cfg["output_dir"]
@@ -109,48 +94,61 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list]:
     cookies     = settings.get("cookies_file")
     archive_dir = settings["archive_dir"]
     sleep       = settings.get("sleep_interval", 2)
+    bgutil_url  = (settings.get("pot_server_url") or
+                   os.environ.get("POT_SERVER_URL", "")).strip()
 
-    archive_path = str(Path(archive_dir) / f"{name}.archive")
-    out_template = str(Path(output_dir) /
-                       "%(playlist_index)03d - %(title)s [%(id)s].%(ext)s")
+    # Окремий архів для yt-dlp (формат "youtube VIDEOID")
+    ytdlp_archive = str(Path(archive_dir) / f"{name}.ytdlp.archive")
+    out_template  = str(Path(output_dir) /
+                        "%(playlist_index)03d - %(title)s [%(id)s].%(ext)s")
 
     ensure_dirs(output_dir)
 
     log(f"  Отримую список...")
-    current_ids = get_playlist_ids(url, cookies)
+    current_ids = get_playlist_ids(url, cookies, bgutil_url)
 
-    archive = load_archive(archive_path)
-    deleted = delete_removed(current_ids, archive, output_dir)
+    on_disk = scan_files(output_dir)
+    deleted = delete_removed(current_ids, on_disk)
     if deleted:
         log(f"  Видалено {deleted} старих треків")
-        save_archive(archive_path, archive)
+
+    # ── Cookies ───────────────────────────────────────────────────────────────
+    # Обов'язкові лише для приватних плейлістів.
+    # З bgutil PO token публічні плейлісти скачуються без cookies.
+    has_cookies = bool(cookies and Path(cookies).exists())
 
     cmd = [
         "yt-dlp",
+        # JS runtime — обов'язково починаючи з yt-dlp 2025.x
+        "--js-runtimes", "nodejs",
         "--extract-audio",
+        # Формат: bestaudio (opus на YT) з fallback на будь-який аудіо
+        "--format", "bestaudio/best",
         "--audio-format", fmt,
         "--audio-quality", "0",
-        # Обкладинка — WebP конвертується в JPG, потім вбудовується в opus
+        # Обкладинка
         "--embed-thumbnail",
         "--convert-thumbnails", "jpg",
-        # Метадані — embed-metadata = основний флаг (add-metadata — старий аліас, не потрібен)
+        # Метадані
         "--embed-metadata",
-        # ── Маппінг тегів для Music Assistant ────────────────────────────────
-        # ALBUM: назва плейліста як альбом
+        # ── Теги для Music Assistant ──────────────────────────────────────────
         "--parse-metadata", "%(playlist_title)s:%(album)s",
-        # TRACKNUMBER: порядковий номер у плейлісті
         "--parse-metadata", "%(playlist_index)s:%(track_number)s",
-        # ARTIST: з поля artist або uploader
         "--parse-metadata", "%(artist,creator,uploader)s:%(artist)s",
-        # ALBUMARTIST: КРИТИЧНО для MA — без нього треки йдуть у "Various Artists"
+        # ALBUMARTIST — критично, без нього всі треки у "Various Artists"
         "--parse-metadata", "%(artist,creator,uploader)s:%(albumartist)s",
-        # DATE: очищаємо дату завантаження (не є роком випуску, ламає сортування в MA)
+        # Очистити DATE — дата завантаження != рік випуску
         "--parse-metadata", ":(?P<meta_date>)",
-        # Безпечні імена файлів для NAS/Windows-сумісних шар
+        # Безпечні імена для SMB шар на Synology
         "--windows-filenames",
+        # ── Архів і вихід ────────────────────────────────────────────────────
         "--output", out_template,
-        "--download-archive", archive_path,
+        "--download-archive", ytdlp_archive,
         "--no-video",
+        # Пропустити недоступні відео (видалені/гео-блок), НЕ зупиняти весь синк
+        "--ignore-no-formats-error",
+        "--no-abort-on-error",
+        # Ігнорувати недоступні треки (але логувати)
         "--ignore-errors",
         "--sleep-interval",     str(sleep),
         "--max-sleep-interval", str(sleep * 3),
@@ -158,29 +156,47 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list]:
         "--newline",
         url,
     ]
-    if cookies and Path(cookies).exists():
+
+    if has_cookies:
         cmd += ["--cookies", cookies]
+        log(f"  Cookies: {cookies}")
+    else:
+        log(f"  Cookies: не використовуються (тільки для приватних плейлістів)")
+
+    # ── PO Token ──────────────────────────────────────────────────────────────
+    if bgutil_url:
+        cmd += ["--extractor-args",
+                f"youtubepot-bgutilhttp:base_url={bgutil_url}"]
+        log(f"  PO Token: {bgutil_url}")
+    else:
+        log(f"  ⚠  POT_SERVER_URL не вказано — можливі помилки завантаження")
 
     log(f"  Скачую нові треки...")
-    subprocess.run(cmd)
+    result = subprocess.run(cmd)
 
-    # yt-dlp пише архів у форматі "youtube VIDEOID" — нам потрібен filepath
-    archive = rebuild_archive(output_dir, archive_path)
-    return archive, current_ids
+    if result.returncode not in (0, 1):
+        log(f"  ⚠  yt-dlp завершився з кодом {result.returncode}")
+
+    on_disk_after = scan_files(output_dir)
+    new_count = len(on_disk_after) - len(on_disk) + deleted
+    if new_count > 0:
+        log(f"  ✅ Скачано нових треків: {new_count}")
+
+    return on_disk_after, current_ids
 
 
 # ── m3u generation ─────────────────────────────────────────────────────────────
 
-def generate_m3u(name: str, current_ids: list, archive: dict,
-                 playlists_dir: str) -> str:
+def generate_m3u(name: str, current_ids: list[str],
+                 on_disk: dict[str, str], playlists_dir: str) -> str:
     m3u_path = Path(playlists_dir) / f"{name}.m3u"
     lines = ["#EXTM3U\n"]
     found = missing = 0
 
     for vid in current_ids:
-        fp = archive.get(vid)
+        fp = on_disk.get(vid)
         if fp and Path(fp).exists():
-            rel = os.path.relpath(fp, playlists_dir)
+            rel   = os.path.relpath(fp, playlists_dir)
             title = re.sub(r'\s*\[[A-Za-z0-9_-]{11}\]$', '', Path(fp).stem)
             title = re.sub(r'^\d{3}\s*-\s*', '', title)
             lines += [f"#EXTINF:-1,{title}\n", f"{rel}\n"]
@@ -189,32 +205,31 @@ def generate_m3u(name: str, current_ids: list, archive: dict,
             missing += 1
 
     m3u_path.write_text("".join(lines), encoding="utf-8")
-    log(f"  📋 {m3u_path.name}: {found} треків"
-        + (f", {missing} відсутніх" if missing else ""))
+    if missing:
+        log(f"  📋 {m3u_path.name}: {found} треків, {missing} недоступних (видалені/гео-блок)")
+    else:
+        log(f"  📋 {m3u_path.name}: {found} треків ✅")
     return str(m3u_path)
 
 
-# ── MA rescan ──────────────────────────────────────────────────────────────────
+# ── HA event ───────────────────────────────────────────────────────────────────
 
-def trigger_ma_rescan():
+def trigger_ha_event():
     ha_url   = os.environ.get("HA_URL", "").rstrip("/")
     ha_token = os.environ.get("HA_TOKEN", "")
     if not ha_url or not ha_token:
         return
-
     import urllib.request
     try:
         req = urllib.request.Request(
             f"{ha_url}/api/events/ytmusic_sync_done",
             data=json.dumps({"status": "ok"}).encode(),
-            headers={
-                "Authorization": f"Bearer {ha_token}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {ha_token}",
+                     "Content-Type": "application/json"},
             method="POST",
         )
         urllib.request.urlopen(req, timeout=10)
-        log("✅ HA event надіслано → можна тригерити MA rescan")
+        log("✅ HA event надіслано")
     except Exception as e:
         log(f"  HA event skip: {e}")
 
@@ -222,9 +237,10 @@ def trigger_ma_rescan():
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
-    log("═" * 50)
+    sep = "═" * 50
+    log(sep)
     log("ytmusic-sync старт")
-    log("═" * 50)
+    log(sep)
 
     cfg      = load_config()
     settings = cfg.get("settings", {})
@@ -234,18 +250,16 @@ def main():
     for playlist in cfg.get("playlists", []):
         log(f"\n▶  {playlist['name']}")
         try:
-            archive, ids = download_playlist(playlist, settings)
-            generate_m3u(
-                playlist["name"], ids, archive,
-                settings["playlists_dir"],
-            )
+            on_disk, ids = download_playlist(playlist, settings)
+            generate_m3u(playlist["name"], ids, on_disk,
+                         settings["playlists_dir"])
         except Exception as e:
             log(f"  ПОМИЛКА: {e}")
             errors.append(playlist["name"])
 
-    trigger_ma_rescan()
+    trigger_ha_event()
 
-    log("\n═" * 50)
+    log(f"\n{sep}")
     if errors:
         log(f"Завершено з помилками: {', '.join(errors)}")
         sys.exit(1)

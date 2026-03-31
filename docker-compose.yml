@@ -3,38 +3,49 @@ services:
     build: .
     image: ytmusic-sync:latest
     container_name: ytmusic-sync
-    platform: linux/amd64          # DS720+ = Celeron J4125 = x86_64
+    platform: linux/amd64
     restart: unless-stopped
 
-    # ── Volumes ───────────────────────────────────────────────────────────────
     volumes:
-      # Конфіги (config.yml + cookies.txt) — редагуй на хості
       - /volume1/docker/ytmusic-sync/config:/config
-
-      # Музика — або локальний том, або NFS шара
       - /volume1/music/kids:/music
-      # Якщо NFS вже змонтована як /mnt/nfs_music:
-      # - /mnt/nfs_music:/music
 
-    # ── Environment ───────────────────────────────────────────────────────────
     environment:
-      # PUID/PGID — linuxserver стиль
-      # Знайди свій: SSH → id твій_юзер
       - PUID=1026
       - PGID=100
-
-      # Cron (хв год * * день_тижня)
-      - SYNC_SCHEDULE=0 3 * * 0    # щонеділі 03:00
-      # - SYNC_SCHEDULE=0 3 * * *  # щодня 03:00
-
+      - SYNC_SCHEDULE=0 3 * * 0
       - TZ=Europe/Kyiv
 
-      # Опціонально: HA event після синку
+      # ── PO Token — підключення до bgutil контейнера ───────────────────────
+      # Вкажи IP свого Synology і порт bgutil контейнера (за замовч 4416)
+      - POT_SERVER_URL=http://192.168.1.NAS_IP:4416
+      # Або якщо bgutil в тому ж docker-compose через мережу:
+      # - POT_SERVER_URL=http://bgutil-provider:4416
+
+      # ── HA event після синку (опціонально) ──────────────────────────────
       # - HA_URL=http://192.168.1.100:8123
       # - HA_TOKEN=eyJhbGciOiJ...
+
+    # Якщо bgutil в окремому контейнері на тому ж хості — спільна мережа
+    # network_mode: bridge
 
     logging:
       driver: json-file
       options:
         max-size: "10m"
-        max-file: "3"              # Synology Docker: max-file БЕЗ 's'
+        max-file: "3"
+
+
+  # Опціонально: запустити bgutil разом з цим compose
+  # (якщо ще не запущено окремо)
+  # bgutil-provider:
+  #   image: brainicism/bgutil-ytdlp-pot-provider:latest
+  #   container_name: bgutil-provider
+  #   restart: unless-stopped
+  #   ports:
+  #     - "4416:4416"
+  #   logging:
+  #     driver: json-file
+  #     options:
+  #       max-size: "5m"
+  #       max-file: "2"
