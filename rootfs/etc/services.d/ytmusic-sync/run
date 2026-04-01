@@ -1,4 +1,4 @@
-#!/usr/bin/with-contenv sh
+#!/command/with-contenv sh
 set -eu
 
 SCHEDULE="${SYNC_SCHEDULE:-0 3 * * 0}"
@@ -9,10 +9,11 @@ chown abc:abc "$LOG_FILE" 2>/dev/null || true
 
 echo "[service] schedule: ${SCHEDULE}"
 if [ -n "${POT_SERVER_URL:-}" ]; then
-	if curl -sS --max-time 5 -o /dev/null "${POT_SERVER_URL}"; then
-		echo "[service] POT server reachable: ${POT_SERVER_URL}" | tee -a "$LOG_FILE"
+	POT_PING_URL="${POT_SERVER_URL%/}/ping"
+	if curl -sS --max-time 5 -o /dev/null "${POT_PING_URL}"; then
+		echo "[service] POT server reachable: ${POT_PING_URL}" | tee -a "$LOG_FILE"
 	else
-		echo "[service] POT server UNREACHABLE: ${POT_SERVER_URL}" | tee -a "$LOG_FILE"
+		echo "[service] POT server UNREACHABLE: ${POT_PING_URL}" | tee -a "$LOG_FILE"
 	fi
 fi
 echo "[service] first sync -> ${LOG_FILE}"

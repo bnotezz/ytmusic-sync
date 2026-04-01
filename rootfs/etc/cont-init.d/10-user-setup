@@ -1,4 +1,4 @@
-#!/usr/bin/with-contenv sh
+#!/command/with-contenv sh
 set -eu
 
 PUID="${PUID:-1000}"
@@ -24,5 +24,11 @@ fi
 
 ln -sf /config/config.yml /app/config.yml
 if [ -f /config/cookies.txt ]; then
+  echo "[init] Fixing /config/cookies.txt permissions..."
+  chown abc:abc /config/cookies.txt 2>/dev/null || true
+  chmod 664 /config/cookies.txt 2>/dev/null || true
   ln -sf /config/cookies.txt /app/cookies.txt
+else
+  echo "[init] /config/cookies.txt not found - yt-dlp will work without cookies"
+  echo "[init]    To use private YouTube Music playlists, add cookies.txt to /config/"
 fi

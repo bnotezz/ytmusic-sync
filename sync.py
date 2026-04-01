@@ -31,22 +31,29 @@ def normalize_pot_url(raw: str) -> str:
     return value
 
 
+def get_pot_ping_url(url: str) -> str:
+    return f"{url.rstrip('/')}/ping"
+
+
 def check_pot_server(url: str, timeout: int = 5) -> bool:
     if not url:
         log("POT server: not configured")
         return False
 
-    req = urllib.request.Request(url, method="GET")
+    ping_url = get_pot_ping_url(url)
+    req = urllib.request.Request(ping_url, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout):
-            log(f"POT server: reachable ({url})")
-            return True
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                log(f"POT server: reachable ({ping_url}), status=200")
+                return True
+            log(f"POT server: unexpected status ({ping_url}), status={response.status}")
+            return False
     except urllib.error.HTTPError as e:
-        # HTTP error still means service is reachable on network level.
-        log(f"POT server: reachable ({url}), status={e.code}")
-        return True
+        log(f"POT server: unreachable ({ping_url}), status={e.code}")
+        return False
     except Exception as e:
-        log(f"POT server: unreachable ({url}) -> {e}")
+        log(f"POT server: unreachable ({ping_url}) -> {e}")
         return False
 
 
@@ -137,7 +144,7 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
 
     ytdlp_archive = str(Path(archive_dir) / f"{name}.ytdlp.archive")
     out_template  = str(Path(output_dir) /
-                        "%(playlist_index)03d - %(title)s [%(id)s].%(ext)s")
+                        "%(playlist_index)03d - %(first_artist)s - %(title)s [%(id)s].%(ext)s")
 
     ensure_dirs(output_dir)
 
@@ -157,17 +164,19 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
         "--extract-audio",
-        "--format", "bestaudio/best",
+        "--format", "bestaudio[acodec^=opus]/bestaudio/best",
         "--audio-format", fmt,
         "--audio-quality", "0",
         "--embed-thumbnail",
-        "--convert-thumbnails", "jpg",
+        "--convert-thumbnails", "png",
+        "--ppa", "ffmpeg: -vf scale=500:500:force_original_aspect_ratio=decrease,pad=500:500:(ow-iw)/2:(oh-ih)/2",
         "--embed-metadata",
         "--parse-metadata", "%(playlist_title)s:%(album)s",
         "--parse-metadata", "%(playlist_index)s:%(track_number)s",
-        "--parse-metadata", "%(artist,creator,uploader)s:%(artist)s",
         "--parse-metadata", "%(artist,creator,uploader)s:%(albumartist)s",
-        "--parse-metadata", ":(?P<meta_date>)",
+        "--parse-metadata", "artist:^(?P<first_artist>[^,]+)",
+        "--parse-metadata", "%(release_year,upload_date>%Y)s:%(meta_date)s",
+        "--parse-metadata", "%(upload_date)s:%(meta_upload_date)s",
         "--windows-filenames",
         "--output", out_template,
         "--download-archive", ytdlp_archive,
@@ -175,6 +184,7 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
         "--ignore-no-formats-error",
         "--no-abort-on-error",
         "--ignore-errors",
+        "--extractor-args", "youtube:player_client=web_mobile",
         "--sleep-interval",     str(sleep),
         "--max-sleep-interval", str(sleep * 3),
         "--concurrent-fragments", "1",
@@ -219,7 +229,7 @@ def generate_m3u(name: str, current_ids: list[str],
         fp = on_disk.get(vid)
         if fp and Path(fp).exists():
             rel   = os.path.relpath(fp, playlists_dir)
-            title = re.sub(r'\s*\[[A-Za-z0-9_-]{11}\]$', '', Path(fp).stem)
+            title = re.sub(r'\s*\[[A-Za-z0-9_-]{11}\]\.[a-z0-9]+$', '', Path(fp).name)
             title = re.sub(r'^\d{3}\s*-\s*', '', title)
             lines += [f"#EXTINF:-1,{title}\n", f"{rel}\n"]
             found += 1

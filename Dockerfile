@@ -54,7 +54,10 @@ COPY sync.py ./
 COPY rootfs/ /
 RUN chmod +x /etc/cont-init.d/10-user-setup \
     /etc/services.d/ytmusic-sync/run \
-    /usr/local/bin/healthcheck.sh
+    /usr/local/bin/healthcheck.sh \
+    && test -x /command/with-contenv \
+    && test -f /etc/cont-init.d/10-user-setup \
+    && test -f /etc/services.d/ytmusic-sync/run
 
 VOLUME ["/config", "/music"]
 

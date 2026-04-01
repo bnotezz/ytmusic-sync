@@ -1,0 +1,36 @@
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Packaging / coverage
+build/
+dist/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local secrets/config overrides
+.env
+.env.*
+config.yml
+cookies.txt
+
+# Runtime logs
+*.log
+
+# OS/editor noise
+.DS_Store
+.vscode/
+.idea/

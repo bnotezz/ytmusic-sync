@@ -5,6 +5,8 @@ services:
     container_name: ytmusic-sync
     platform: linux/amd64
     restart: unless-stopped
+    privileged: true
+    network_mode: host
 
     volumes:
       - /volume1/docker/ytmusic-sync/config:/config
