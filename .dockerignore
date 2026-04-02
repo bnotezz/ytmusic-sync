@@ -25,6 +25,9 @@ cookies.txt
 # Logs
 *.log
 
+# Local test runtime
+local/
+
 # Editor/OS
 .DS_Store
 .vscode/

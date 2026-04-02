@@ -30,7 +30,11 @@ cookies.txt
 # Runtime logs
 *.log
 
+# Local test runtime
+local/
+
 # OS/editor noise
 .DS_Store
 .vscode/
 .idea/
+docker-compose.local.yml

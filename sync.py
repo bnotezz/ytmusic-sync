@@ -9,71 +9,57 @@ import re
 import sys
 import yaml
 import json
+import logging
 import subprocess
 import urllib.request
 import urllib.error
 from pathlib import Path
 from datetime import datetime
 
-
-def log(msg: str):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {msg}", flush=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
 
 
 def normalize_pot_url(raw: str) -> str:
-    """Return empty string for placeholder/invalid PO token URLs from examples."""
     value = (raw or "").strip()
-    if not value:
-        return ""
-    if "NAS_IP" in value or "ЗАМІНИТИ" in value:
+    if not value or "NAS_IP" in value or "ЗАМІНИТИ" in value:
         return ""
     return value
 
 
-def get_pot_ping_url(url: str) -> str:
-    return f"{url.rstrip('/')}/ping"
-
-
 def check_pot_server(url: str, timeout: int = 5) -> bool:
     if not url:
-        log("POT server: not configured")
+        logger.info("  POT server: не налаштовано")
         return False
-
-    ping_url = get_pot_ping_url(url)
-    req = urllib.request.Request(ping_url, method="GET")
+    ping = f"{url.rstrip('/')}/ping"
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            if response.status == 200:
-                log(f"POT server: reachable ({ping_url}), status=200")
-                return True
-            log(f"POT server: unexpected status ({ping_url}), status={response.status}")
-            return False
-    except urllib.error.HTTPError as e:
-        log(f"POT server: unreachable ({ping_url}), status={e.code}")
+        with urllib.request.urlopen(ping, timeout=timeout) as r:
+            ok = r.status == 200
+            logger.info(f"  POT server: {'✅ доступний' if ok else '⚠ недоступний'} ({ping})") if ok else logger.warning(f"  POT server: ⚠ недоступний ({ping})")
+            return ok
+    except urllib.error.URLError as e:
+        logger.warning(f"  POT server: ⚠ недоступний ({ping}) → {e}")
         return False
     except Exception as e:
-        log(f"POT server: unreachable ({ping_url}) -> {e}")
+        logger.exception(f"  POT server: ⚠ неочікувана помилка ({ping})")
         return False
 
 
 def load_config(path: str = "/app/config.yml") -> dict:
-    config_env = os.environ.get("YTMUSIC_CONFIG", "").strip()
-    candidates = []
-    if config_env:
-        candidates.append(config_env)
-    if path:
-        candidates.append(path)
-    candidates.append("/config/config.yml")
-
-    for candidate in candidates:
-        if Path(candidate).exists():
+    for candidate in [
+        os.environ.get("YTMUSIC_CONFIG", ""),
+        path,
+        "/config/config.yml",
+    ]:
+        if candidate and Path(candidate).exists():
             with open(candidate) as f:
                 return yaml.safe_load(f)
-
-    raise FileNotFoundError(
-        "Config file not found. Checked: " + ", ".join(candidates)
-    )
+    raise FileNotFoundError("Config not found")
 
 
 def ensure_dirs(*paths):
@@ -81,36 +67,107 @@ def ensure_dirs(*paths):
         Path(p).mkdir(parents=True, exist_ok=True)
 
 
-def get_playlist_ids(url: str, cookies_file: str | None = None,
-                     bgutil_url: str = "") -> list[str]:
-    """Отримати поточний список video ID без скачування"""
-    cmd = [
-        "yt-dlp", "--flat-playlist",
-        "--print", "%(id)s",
-        "--no-warnings",
-        "--js-runtimes", "node",
-        "--remote-components", "ejs:github",
-        url,
-    ]
+VIDEOID_RE = re.compile(r'\[([A-Za-z0-9_-]{11})\]\.(opus|m4a|mp3|ogg)$')
+VIDEO_URL_ID_RE = re.compile(r'(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})')
+
+
+# ── Playlist IDs ───────────────────────────────────────────────────────────────
+
+def is_single_video_url(url: str) -> bool:
+    value = (url or "").strip()
+    return "watch?v=" in value or "youtu.be/" in value
+
+
+def extract_video_id_from_url(url: str) -> str:
+    m = VIDEO_URL_ID_RE.search(url or "")
+    return m.group(1) if m else ""
+
+
+def youtube_extractor_args(bgutil_url: str, use_web_music: bool) -> tuple[str, str | None]:
+    # mweb is the recommended client when PO tokens are involved, and it is
+    # also the safer fallback when POT is disabled.
+    youtube_part = (
+        "youtube:player_client=web_music;skip=translated_subs,dash;fetch_pot=auto"
+        if use_web_music
+        else "youtube:player_client=mweb;skip=translated_subs,dash;fetch_pot=never"
+    )
+    bgutil_part = f"youtubepot-bgutilhttp:base_url={bgutil_url}" if bgutil_url else None
+    return youtube_part, bgutil_part
+
+
+def load_path_map(path_map_file: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    p = Path(path_map_file)
+    if not p.exists():
+        return result
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or "\t" not in line:
+            continue
+        video_id, file_path = line.split("\t", 1)
+        file_path = file_path.strip()
+        if file_path and Path(file_path).exists():
+            result[video_id.strip()] = file_path
+    return result
+
+
+def strip_opus_language_tag(file_path: str) -> bool:
+    path = Path(file_path)
+    if path.suffix.lower() != ".opus" or not path.exists():
+        return False
+    try:
+        from mutagen.oggopus import OggOpus
+    except Exception as e:
+        logger.info(f"  language tag skip: mutagen unavailable ({e})")
+        return False
+
+    try:
+        audio = OggOpus(str(path))
+        if audio.tags and "language" in audio.tags:
+            del audio.tags["language"]
+            audio.save()
+            logger.info(f"  🧹 language tag removed: {path.name}")
+            return True
+    except Exception as e:
+        logger.warning(f"  language tag skip: {path.name} → {e}")
+    return False
+
+def get_playlist_ids(url: str, cookies_file: str | None,
+                     bgutil_url: str) -> list[str]:
+    if is_single_video_url(url):
+        vid = extract_video_id_from_url(url)
+        if vid:
+            logger.info("  Single video URL detected")
+            return [vid]
+
+    youtube_extractor_args_value, bgutil_extractor_args_value = youtube_extractor_args(
+        bgutil_url, use_web_music=bool(bgutil_url))
+    cmd = ["yt-dlp", "--print", "%(id)s", "--no-warnings",
+           "--js-runtimes", "deno", "--remote-components", "ejs:github",
+           "--extractor-args", youtube_extractor_args_value]
+    if bgutil_extractor_args_value:
+        cmd += ["--extractor-args", bgutil_extractor_args_value]
+    if not is_single_video_url(url):
+        cmd.insert(1, "--flat-playlist")
+    cmd += [url]
     if cookies_file and Path(cookies_file).exists():
         cmd += ["--cookies", cookies_file]
-    if bgutil_url:
-        cmd += ["--extractor-args",
-                f"youtubepot-bgutilhttp:base_url={bgutil_url}"]
-
     result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Не вдалося отримати список треків: {result.stderr.strip() or result.stdout.strip()}")
     ids = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
-    log(f"  Треків у плейлісті: {len(ids)}")
+    logger.info(f"  Треків у плейлісті: {len(ids)}")
     return ids
 
 
-VIDEOID_RE = re.compile(r'\[([A-Za-z0-9_-]{11})\]\.(opus|m4a|mp3|ogg)$')
-
+# ── Disk scan ──────────────────────────────────────────────────────────────────
 
 def scan_files(output_dir: str) -> dict[str, str]:
     """Повертає {video_id: абсолютний шлях} за файлами на диску"""
     result = {}
-    for f in Path(output_dir).iterdir():
+    p = Path(output_dir)
+    if not p.exists():
+        return result
+    for f in p.iterdir():
         if f.is_file():
             m = VIDEOID_RE.search(f.name)
             if m:
@@ -118,18 +175,57 @@ def scan_files(output_dir: str) -> dict[str, str]:
     return result
 
 
+# ── Archive validation ─────────────────────────────────────────────────────────
+
+def clean_orphaned_archive(archive_path: str, on_disk: dict[str, str]):
+    """
+    Видалити з .ytdlp.archive записи де файл не існує на диску.
+    Це дозволяє yt-dlp перескачати 'загублені' треки.
+    """
+    p = Path(archive_path)
+    if not p.exists():
+        return 0
+
+    lines = p.read_text().splitlines()
+    cleaned = []
+    removed = 0
+
+    for line in lines:
+        # yt-dlp формат: "youtube VIDEOID"
+        parts = line.strip().split(" ", 1)
+        if len(parts) == 2:
+            vid_id = parts[1].strip()
+            if vid_id in on_disk:
+                cleaned.append(line)
+            else:
+                removed += 1
+                logger.info(f"  🔧 Archive orphan removed: {vid_id}")
+        else:
+            cleaned.append(line)
+
+    if removed:
+        p.write_text("\n".join(cleaned) + ("\n" if cleaned else ""))
+        logger.info(f"  Archive: видалено {removed} orphan записів → буде перескачано")
+
+    return removed
+
+
+# ── Delete removed ─────────────────────────────────────────────────────────────
+
 def delete_removed(current_ids: list[str], on_disk: dict[str, str]) -> int:
     current_set = set(current_ids)
     deleted = 0
     for vid, fp in list(on_disk.items()):
         if vid not in current_set:
-            log(f"  🗑  Видаляю: {Path(fp).name}")
+            logger.info(f"  🗑  Видаляю: {Path(fp).name}")
             Path(fp).unlink(missing_ok=True)
             for ext in (".jpg", ".png", ".webp"):
                 Path(fp).with_suffix(ext).unlink(missing_ok=True)
             deleted += 1
     return deleted
 
+
+# ── Download ───────────────────────────────────────────────────────────────────
 
 def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
     name        = cfg["name"]
@@ -139,85 +235,127 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
     cookies     = settings.get("cookies_file")
     archive_dir = settings["archive_dir"]
     sleep       = settings.get("sleep_interval", 2)
-    bgutil_url  = normalize_pot_url(settings.get("pot_server_url") or
-                                    os.environ.get("POT_SERVER_URL", ""))
+    bgutil_url  = normalize_pot_url(str(settings.get("pot_server_url") or ""))
+    path_map_file = str(Path(archive_dir) / f"{name}.paths.tsv")
 
     ytdlp_archive = str(Path(archive_dir) / f"{name}.ytdlp.archive")
-    out_template  = str(Path(output_dir) /
-                        "%(playlist_index)03d - %(first_artist)s - %(title)s [%(id)s].%(ext)s")
+    if is_single_video_url(url):
+        out_template = str(
+            Path(output_dir) /
+            "%(artist,creator,uploader)s - %(title)s.%(ext)s"
+        )
+    else:
+        out_template = str(
+            Path(output_dir) /
+            "%(playlist_index)03d - %(artist,creator,uploader)s - %(title)s.%(ext)s"
+        )
 
     ensure_dirs(output_dir)
 
-    log(f"  Отримую список...")
+    logger.info(f"  Отримую список...")
     current_ids = get_playlist_ids(url, cookies, bgutil_url)
 
-    on_disk = scan_files(output_dir)
+    # Стан диску до скачування
+    on_disk = load_path_map(path_map_file)
+
+    # ВИПРАВЛЕННЯ: видалити orphan-записи з архіву
+    # (треки в архіві, але файл не існує → yt-dlp перескачає)
+    clean_orphaned_archive(ytdlp_archive, on_disk)
+
     deleted = delete_removed(current_ids, on_disk)
     if deleted:
-        log(f"  Видалено {deleted} старих треків")
+        logger.info(f"  Видалено {deleted} старих треків")
 
-    # Cookies are needed only for private playlists.
     has_cookies = bool(cookies and Path(cookies).exists())
+    single_video = is_single_video_url(url)
+    youtube_extractor_args_value, bgutil_extractor_args_value = youtube_extractor_args(
+        bgutil_url, use_web_music=bool(bgutil_url))
 
-    cmd = [
-        "yt-dlp",
-        "--js-runtimes", "node",
-        "--remote-components", "ejs:github",
-        "--extract-audio",
-        "--format", "bestaudio[acodec^=opus]/bestaudio/best",
-        "--audio-format", fmt,
-        "--audio-quality", "0",
-        "--embed-thumbnail",
-        "--convert-thumbnails", "png",
-        "--ppa", "ffmpeg: -vf scale=500:500:force_original_aspect_ratio=decrease,pad=500:500:(ow-iw)/2:(oh-ih)/2",
-        "--embed-metadata",
-        "--parse-metadata", "%(playlist_title)s:%(album)s",
-        "--parse-metadata", "%(playlist_index)s:%(track_number)s",
+    metadata_args = [
         "--parse-metadata", "%(artist,creator,uploader)s:%(albumartist)s",
         "--parse-metadata", "artist:^(?P<first_artist>[^,]+)",
         "--parse-metadata", "%(release_year,upload_date>%Y)s:%(meta_date)s",
         "--parse-metadata", "%(upload_date)s:%(meta_upload_date)s",
+        "--parse-metadata", "%(album,release_title,playlist_title)s:%(album)s",
+    ]
+    if not single_video:
+        metadata_args += [
+            "--parse-metadata", "%(playlist_index)s:%(track_number)s",
+        ]
+
+    cmd = [
+        "yt-dlp",
+        # JS runtime
+        "--js-runtimes", "deno",
+        "--remote-components", "ejs:github",
+        "--quiet",
+        "--no-warnings",
+        "--no-progress",
+        "--extract-audio",
+        "--format", "bestaudio[acodec^=opus]/bestaudio/best",
+        "--audio-format", fmt,
+        "--audio-quality", "0",
+        # Метадані
+        "--embed-metadata",
+        "--ppa", "EmbedMetadata: -metadata:s:a:0 language=",
+        "--ppa", "FFmpegExtractAudio: -metadata:s:a:0 language=",
+        # Обкладинка
+        "--convert-thumbnails", "png",
+        "--embed-thumbnail",
+        "--ppa", "ThumbnailsConvertor:-vf crop=\"'if(gt(ih,iw),iw,ih)':'if(gt(iw,ih),ih,iw)'\"",
+    ]
+
+    cmd += [
+        *metadata_args,
         "--windows-filenames",
         "--output", out_template,
         "--download-archive", ytdlp_archive,
         "--no-video",
-        "--ignore-no-formats-error",
-        "--no-abort-on-error",
-        "--ignore-errors",
-        "--extractor-args", "youtube:player_client=web_mobile",
+        "--extractor-args", youtube_extractor_args_value,
+        "--exec", f"after_move:sh -c 'printf \"%s\\t%s\\n\" \"$1\" \"$2\" >> \"$3\"' sh \"%(id)s\" \"%(filepath)s\" \"{path_map_file}\"",
         "--sleep-interval",     str(sleep),
         "--max-sleep-interval", str(sleep * 3),
         "--concurrent-fragments", "1",
-        "--newline",
         url,
     ]
+    
+    cmd[cmd.index("--windows-filenames") : cmd.index("--windows-filenames")] = [
+        "--ignore-no-formats-error",
+        "--no-abort-on-error",
+        "--ignore-errors",
+    ]
+
+    if bgutil_extractor_args_value:
+        cmd[cmd.index("--sleep-interval") : cmd.index("--sleep-interval")] = [
+            "--extractor-args", bgutil_extractor_args_value,
+        ]
 
     if has_cookies:
         cmd += ["--cookies", cookies]
-        log(f"  Cookies: {cookies}")
     else:
-        log(f"  Cookies: не використовуються (тільки для приватних плейлістів)")
+        logger.info(f"  Cookies: не використовуються")
 
     if bgutil_url:
-        cmd += ["--extractor-args",
-                f"youtubepot-bgutilhttp:base_url={bgutil_url}"]
-        log(f"  PO Token: {bgutil_url}")
+        logger.info(f"  PO Token: {bgutil_url}")
     else:
-        log(f"  POT_SERVER_URL: не задано")
+        logger.info("  POT disabled: using youtube fallback clients")
 
-    log(f"  Скачую нові треки...")
+    logger.info(f"  Скачую нові треки...")
     result = subprocess.run(cmd)
-
     if result.returncode not in (0, 1):
-        log(f"  ⚠  yt-dlp завершився з кодом {result.returncode}")
+        logger.warning(f"  ⚠  yt-dlp код: {result.returncode}")
 
-    on_disk_after = scan_files(output_dir)
+    on_disk_after = load_path_map(path_map_file)
+    for file_path in on_disk_after.values():
+        strip_opus_language_tag(file_path)
     new_count = len(on_disk_after) - len(on_disk) + deleted
     if new_count > 0:
-        log(f"  ✅ Скачано нових треків: {new_count}")
+        logger.info(f"  ✅ Нових треків: {new_count}")
 
     return on_disk_after, current_ids
 
+
+# ── m3u ────────────────────────────────────────────────────────────────────────
 
 def generate_m3u(name: str, current_ids: list[str],
                  on_disk: dict[str, str], playlists_dir: str) -> str:
@@ -229,7 +367,8 @@ def generate_m3u(name: str, current_ids: list[str],
         fp = on_disk.get(vid)
         if fp and Path(fp).exists():
             rel   = os.path.relpath(fp, playlists_dir)
-            title = re.sub(r'\s*\[[A-Za-z0-9_-]{11}\]\.[a-z0-9]+$', '', Path(fp).name)
+            # Прибрати ведучий номер і розширення файлу для чистої назви в M3U.
+            title = Path(fp).stem
             title = re.sub(r'^\d{3}\s*-\s*', '', title)
             lines += [f"#EXTINF:-1,{title}\n", f"{rel}\n"]
             found += 1
@@ -238,18 +377,19 @@ def generate_m3u(name: str, current_ids: list[str],
 
     m3u_path.write_text("".join(lines), encoding="utf-8")
     if missing:
-        log(f"  📋 {m3u_path.name}: {found} треків, {missing} недоступних (видалені/гео-блок)")
+        logger.info(f"  📋 {m3u_path.name}: {found} треків, {missing} не знайдено")
     else:
-        log(f"  📋 {m3u_path.name}: {found} треків ✅")
+        logger.info(f"  📋 {m3u_path.name}: {found} треків ✅")
     return str(m3u_path)
 
+
+# ── HA event ───────────────────────────────────────────────────────────────────
 
 def trigger_ha_event():
     ha_url   = os.environ.get("HA_URL", "").rstrip("/")
     ha_token = os.environ.get("HA_TOKEN", "")
     if not ha_url or not ha_token:
         return
-    import urllib.request
     try:
         req = urllib.request.Request(
             f"{ha_url}/api/events/ytmusic_sync_done",
@@ -259,43 +399,47 @@ def trigger_ha_event():
             method="POST",
         )
         urllib.request.urlopen(req, timeout=10)
-        log("✅ HA event надіслано")
+        logger.info("✅ HA event надіслано")
+    except urllib.error.URLError as e:
+        logger.warning(f"  HA event network skip: {e}")
     except Exception as e:
-        log(f"  HA event skip: {e}")
+        logger.exception(f"  HA event failed unexpectedly")
 
+
+# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
     sep = "═" * 50
-    log(sep)
-    log("ytmusic-sync старт")
-    log(sep)
+    logger.info(sep)
+    logger.info("ytmusic-sync старт")
+    logger.info(sep)
 
     cfg      = load_config()
     settings = cfg.get("settings", {})
     ensure_dirs(settings["playlists_dir"], settings["archive_dir"])
-    check_pot_server(normalize_pot_url(
-        settings.get("pot_server_url") or os.environ.get("POT_SERVER_URL", "")
-    ))
+
+    pot_url = normalize_pot_url(str(settings.get("pot_server_url") or ""))
+    check_pot_server(pot_url)
 
     errors = []
     for playlist in cfg.get("playlists", []):
-        log(f"\n▶  {playlist['name']}")
+        logger.info(f"\n▶  {playlist['name']}")
         try:
             on_disk, ids = download_playlist(playlist, settings)
             generate_m3u(playlist["name"], ids, on_disk,
                          settings["playlists_dir"])
         except Exception as e:
-            log(f"  ПОМИЛКА: {e}")
+            logger.exception(f"  ПОМИЛКА обробки плейліста {playlist['name']}: {e}")
             errors.append(playlist["name"])
 
     trigger_ha_event()
 
-    log(f"\n{sep}")
+    logger.info(f"\n{sep}")
     if errors:
-        log(f"Завершено з помилками: {', '.join(errors)}")
+        logger.info(f"Завершено з помилками: {', '.join(errors)}")
         sys.exit(1)
     else:
-        log("Синхронізація успішно завершена")
+        logger.info("Синхронізація успішно завершена")
 
 
 if __name__ == "__main__":

@@ -10,9 +10,11 @@ groupmod -o -g "${PGID}" abc 2>/dev/null || true
 usermod -o -u "${PUID}" abc 2>/dev/null || true
 
 mkdir -p /config /music /app
+mkdir -p /config/.cache
 
 # Keep startup fast on NAS with large music libraries: do not chown recursively.
 chown abc:abc /config /music 2>/dev/null || true
+chown abc:abc /config/.cache 2>/dev/null || true
 touch /config/sync.log 2>/dev/null || true
 chown abc:abc /config/sync.log 2>/dev/null || true
 

@@ -17,7 +17,6 @@ services:
       - PGID=100
       - SYNC_SCHEDULE=0 3 * * 0
       - TZ=Europe/Kyiv
-      - POT_SERVER_URL=${POT_SERVER_URL:-http://127.0.0.1:4416}
 
       # Home Assistant event after sync (optional)
       # - HA_URL=http://192.168.1.100:8123

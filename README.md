@@ -11,6 +11,7 @@
 - Python: `3.13` (`python:3.13-slim-bookworm`)
 - yt-dlp: latest на момент збірки образу
 - ffmpeg: latest static build з `yt-dlp/FFmpeg-Builds` на момент збірки
+- Deno: latest stable runtime на момент збірки
 - s6-overlay: `3.2.1.0`
 
 ## Як працює
@@ -46,7 +47,8 @@
 - `ffmpeg` (готовий static build, без компіляції)
 - `nodejs` (JS runtime для yt-dlp)
 - `bgutil-ytdlp-pot-provider` python plugin
-- `cron`, `gosu`, `s6-overlay`
+- `deno` (JS runtime для yt-dlp)
+- `deno` (JS runtime для yt-dlp)
 
 ## Швидкий старт (Synology)
 
@@ -64,7 +66,8 @@ cp config.example.yml /volume1/docker/ytmusic-sync/config/config.yml
 ```
 
 В `config.yml` заміни `url` на свої YouTube Music playlist URL.
-
+Для локального тесту контейнер запускається з мінімальним профілем yt-dlp, щоб швидше ізолювати проблеми з POT / JS runtime / metadata.
+Для локального тесту контейнер запускається з мінімальним профілем yt-dlp, щоб швидше ізолювати проблеми з POT / JS runtime / metadata.
 ### 3. Налаштуй PUID/PGID
 
 ```bash
@@ -75,13 +78,17 @@ id <synology_user>
 - `PUID`
 - `PGID`
 
-### 4. Вкажи POT_SERVER_URL
+### 4. Налаштуй POT у config.yml
 
-Дефолт у проєкті:
+Єдине місце налаштування POT:
 
-- `http://127.0.0.1:4416`
+- `settings.pot_server_url` у `/config/config.yml`
 
-Якщо bgutil доступний не через localhost, задай свій URL у `docker-compose.yml` або через `.env`.
+Приклади:
+
+- `pot_server_url: "http://127.0.0.1:4416"`
+- `pot_server_url: "http://192.168.50.192:4416"`
+- `pot_server_url: ""` (вимкнено)
 
 ### 5A. Варіант через Synology Container Manager (Project Create)
 
@@ -129,7 +136,7 @@ settings:
   archive_dir: /music/.sync
   cookies_file: /config/cookies.txt
   sleep_interval: 2
-  pot_server_url: "http://127.0.0.1:4416"
+  pot_server_url: "http://192.168.50.192:4416" # або "" для вимкнення
 ```
 
 ## Параметри середовища (`docker-compose.yml`)
@@ -138,9 +145,10 @@ settings:
 - `PGID` - GID групи-власника файлів.
 - `SYNC_SCHEDULE` - cron, за замовчуванням `0 3 * * 0`.
 - `TZ` - часовий пояс.
-- `POT_SERVER_URL` - URL зовнішнього `bgutil-ytdlp-pot-provider` (дефолт `http://127.0.0.1:4416`).
 - `HA_URL` - optional Home Assistant URL.
 - `HA_TOKEN` - optional Home Assistant Long-lived token.
+
+POT налаштовується тільки через `settings.pot_server_url` у `/config/config.yml`.
 
 ## Ручний запуск синхронізації
 

@@ -3,21 +3,50 @@ set -eu
 
 SCHEDULE="${SYNC_SCHEDULE:-0 3 * * 0}"
 LOG_FILE="/config/sync.log"
+DISABLE_CRON="${DISABLE_CRON:-0}"
 
 touch "$LOG_FILE" 2>/dev/null || true
 chown abc:abc "$LOG_FILE" 2>/dev/null || true
+mkdir -p /config/.cache
+chown abc:abc /config/.cache 2>/dev/null || true
+export XDG_CACHE_HOME="/config/.cache"
 
 echo "[service] schedule: ${SCHEDULE}"
-if [ -n "${POT_SERVER_URL:-}" ]; then
+POT_SERVER_URL="$(python - <<'PY'
+import os
+from pathlib import Path
+
+import yaml
+
+paths = [os.environ.get("YTMUSIC_CONFIG", ""), "/app/config.yml", "/config/config.yml"]
+value = ""
+for p in paths:
+    if p and Path(p).exists():
+        with open(p, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        value = ((cfg.get("settings") or {}).get("pot_server_url") or "").strip()
+        break
+print(value)
+PY
+)"
+
+if [ -n "${POT_SERVER_URL}" ]; then
 	POT_PING_URL="${POT_SERVER_URL%/}/ping"
 	if curl -sS --max-time 5 -o /dev/null "${POT_PING_URL}"; then
 		echo "[service] POT server reachable: ${POT_PING_URL}" | tee -a "$LOG_FILE"
 	else
 		echo "[service] POT server UNREACHABLE: ${POT_PING_URL}" | tee -a "$LOG_FILE"
 	fi
+else
+	echo "[service] POT disabled (settings.pot_server_url is empty)" | tee -a "$LOG_FILE"
 fi
 echo "[service] first sync -> ${LOG_FILE}"
 gosu abc python /app/sync.py >> "$LOG_FILE" 2>&1
+
+if [ "$DISABLE_CRON" = "1" ]; then
+	echo "[service] cron disabled (DISABLE_CRON=1); keeping container alive for local debugging"
+	exec tail -f /dev/null
+fi
 
 echo "${SCHEDULE} gosu abc python /app/sync.py >> ${LOG_FILE} 2>&1" | crontab -u root -
 echo "[service] cron started"

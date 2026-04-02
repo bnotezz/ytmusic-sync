@@ -28,5 +28,5 @@ settings:
   cookies_file:  /config/cookies.txt
   sleep_interval: 2
 
-  # Дефолт для bgutil на localhost (порт 4416):
+  # Єдине місце налаштування POT ("" = вимкнено)
   pot_server_url: "http://127.0.0.1:4416"
