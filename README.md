@@ -22,8 +22,9 @@
 4. Дозавантажує нові треки через `yt-dlp` (audio only).
 5. Нормалізує теги (прибирає `language` для opus, додає `albumartist`, якщо його немає).
 6. Опційно робить enrich метаданих через MusicBrainz.
-7. Оновлює `.m3u` у папці `playlists_dir`.
-8. Повторює запуск за cron-розкладом `SYNC_SCHEDULE`.
+7. Записує `.m3u` поруч із файлами плейліста та створює `folder.jpg` / `cover.jpg` у тій самій папці.
+8. У `.m3u` додає MA-friendly metadata (`#PLAYLIST`, `#EXTMA`, `#EXTARTIST`, `#EXTALBUM`, `#EXTIMG`) включно з оригінальним YT Music URL треку.
+9. Повторює запуск за cron-розкладом `SYNC_SCHEDULE`.
 
 ## Linuxserver-style runtime
 
@@ -121,7 +122,8 @@ docker compose logs -f ytmusic-sync
 - `/config/cookies.txt` - optional cookies для приватних плейлістів.
 - `/config/sync.log` - лог cron-запусків.
 - `/music/<playlist_dir>` - аудіофайли.
-- `/music/playlists/*.m3u` - згенеровані плейлісти.
+- `/music/<playlist_dir>/*.m3u` - згенерований плейліст поруч із файлами.
+- `/music/<playlist_dir>/folder.jpg` / `/music/<playlist_dir>/cover.jpg` - thumbnail для Kodi / Music Assistant.
 - `/music/.sync/*.ytdlp.archive` - архів уже завантажених ID.
 
 ## Приклад `config.yml`
@@ -134,7 +136,6 @@ playlists:
     format: opus
 
 settings:
-  playlists_dir: /music/playlists
   archive_dir: /music/.sync
   cookies_file: /config/cookies.txt
   sleep_interval: 2
@@ -142,6 +143,8 @@ settings:
   musicbrainz_min_interval_sec: 1.1
   pot_server_url: "http://192.168.50.192:4416" # або "" для вимкнення
 ```
+
+За замовчуванням `.m3u` пишеться в `output_dir` кожного плейліста. Якщо треба іншу папку, додай `playlist_dir` у відповідний елемент `playlists`.
 
 `musicbrainz_enrich: true` увімкне доповнення тегів (`musicbrainz_recordingid`, `musicbrainz_artistid`, `musicbrainz_albumid`, а також `album/date` якщо бракує).
 

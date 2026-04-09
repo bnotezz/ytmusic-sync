@@ -11,6 +11,7 @@ import yaml
 import json
 import logging
 import subprocess
+import shutil
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -124,6 +125,194 @@ def load_path_map(path_map_file: str) -> dict[str, str]:
         if file_path and Path(file_path).exists():
             result[video_id.strip()] = file_path
     return result
+
+
+def _read_audio_tags(file_path: str) -> tuple[dict[str, list[str]], int | None]:
+    try:
+        import mutagen
+    except Exception as e:
+        logger.info(f"  metadata skip: mutagen unavailable ({e})")
+        return {}, None
+
+    try:
+        audio = mutagen.File(file_path, easy=True)
+        if audio is None:
+            return {}, None
+        tags = audio.tags or {}
+        duration = None
+        if getattr(audio, "info", None) and getattr(audio.info, "length", None):
+            duration = max(1, int(round(float(audio.info.length))))
+        return {key.lower(): list(value) for key, value in tags.items()}, duration
+    except Exception as e:
+        logger.warning(f"  metadata skip: {Path(file_path).name} → {e}")
+        return {}, None
+
+
+def _first_tag(tags: dict[str, list[str]], key: str) -> str:
+    values = tags.get(key.lower()) or []
+    return values[0].strip() if values else ""
+
+
+def _track_number_value(tags: dict[str, list[str]]) -> str:
+    value = _first_tag(tags, "tracknumber")
+    if not value:
+        return ""
+    return value.split("/", 1)[0].strip()
+
+
+def _extract_playlist_artwork_from_tracks(on_disk: dict[str, str], playlist_dir: str) -> Path | None:
+    target_dir = Path(playlist_dir)
+    ensure_dirs(target_dir)
+    temp_art = target_dir / ".playlist-artwork.jpg"
+
+    for file_path in on_disk.values():
+        source = Path(file_path)
+        if not source.exists() or not source.is_file():
+            continue
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(source),
+                    "-an",
+                    "-vcodec",
+                    "mjpeg",
+                    "-frames:v",
+                    "1",
+                    str(temp_art),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0 and temp_art.exists() and temp_art.stat().st_size > 0:
+                return temp_art
+        except Exception:
+            continue
+    return None
+
+
+def _write_playlist_artwork(playlist_dir: str, source_image: Path | None) -> bool:
+    target_dir = Path(playlist_dir)
+    ensure_dirs(target_dir)
+    targets = [target_dir / "folder.jpg", target_dir / "cover.jpg"]
+
+    if source_image is None:
+        return False
+
+    changed = False
+    for target in targets:
+        try:
+            if target.exists():
+                target.unlink()
+            if source_image.suffix.lower() in (".jpg", ".jpeg"):
+                shutil.copyfile(source_image, target)
+            else:
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-i",
+                        str(source_image),
+                        "-frames:v",
+                        "1",
+                        str(target),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            changed = True
+        except Exception as e:
+            logger.warning(f"  artwork skip: {target.name} ← {source_image.name} → {e}")
+    return changed
+
+
+def _cleanup_track_sidecar_thumbnails(on_disk: dict[str, str]) -> int:
+    removed = 0
+    for file_path in on_disk.values():
+        base = Path(file_path)
+        for ext in (".jpg", ".jpeg", ".png", ".webp"):
+            candidate = base.with_suffix(ext)
+            if candidate.exists() and candidate.is_file():
+                candidate.unlink(missing_ok=True)
+                removed += 1
+    return removed
+
+
+def _playlist_item_lines(
+    file_path: str,
+    playlist_rel_path: str,
+    video_id: str,
+) -> list[str]:
+    tags, duration = _read_audio_tags(file_path)
+    title = _first_tag(tags, "title") or Path(file_path).stem
+    artist = _first_tag(tags, "artist")
+    album = _first_tag(tags, "album")
+    albumartist = _first_tag(tags, "albumartist") or artist
+    genre = _first_tag(tags, "genre")
+    date = _first_tag(tags, "date") or _first_tag(tags, "year")
+    isrc = _first_tag(tags, "isrc")
+    recording_id = _first_tag(tags, "musicbrainz_recordingid")
+    artist_ids = tags.get("musicbrainz_artistid") or []
+    album_id = _first_tag(tags, "musicbrainz_albumid") or _first_tag(tags, "musicbrainz_releasegroupid")
+    track_no = _track_number_value(tags)
+    length = str(duration) if duration else None
+    track_source_url = f"https://music.youtube.com/watch?v={video_id}" if video_id else ""
+
+    extinf_title = f"{artist} - {title}" if artist and title else title
+
+    metadata: dict[str, str] = {"media_type": "track", "name": title}
+    if artist:
+        metadata["artist"] = artist
+    if album:
+        metadata["album"] = album
+    if albumartist:
+        metadata["albumartist"] = albumartist
+    if genre:
+        metadata["genre"] = genre
+    if date:
+        metadata["date"] = date
+    if isrc:
+        metadata["isrc"] = isrc
+    if recording_id:
+        metadata["musicbrainz_recordingid"] = recording_id
+    if artist_ids:
+        metadata["musicbrainz_artistid"] = ",".join(artist_ids)
+    if album_id:
+        metadata["musicbrainz_albumid"] = album_id
+    if track_no:
+        metadata["track_number"] = track_no
+    if track_source_url:
+        metadata["source_url"] = track_source_url
+
+    lines = ["#EXTMA:" + "||".join(f"{key}={value}" for key, value in metadata.items())]
+    if artist and (artist_ids or albumartist):
+        provider_domain = "musicbrainz" if artist_ids else "local"
+        provider_instance = "musicbrainz" if artist_ids else "local"
+        artist_item_id = artist_ids[0] if artist_ids else artist
+        lines.append(
+            f"#EXTARTIST:{artist}||{provider_domain}||{artist_item_id}||{provider_instance}"
+        )
+    if album:
+        provider_domain = "musicbrainz" if album_id else "local"
+        provider_instance = "musicbrainz" if album_id else "local"
+        album_item_id = album_id or album
+        lines.append(
+            f"#EXTALBUM:{album}||{provider_domain}||{album_item_id}||{provider_instance}||"
+        )
+    lines.append("#EXTIMG:thumb||cover.jpg||local||false")
+    if title and length is not None:
+        lines.append(f"#EXTINF:{length},{extinf_title}")
+    lines.append(playlist_rel_path)
+    return lines
 
 
 def strip_opus_language_tag(file_path: str) -> bool:
@@ -326,6 +515,39 @@ def get_playlist_ids(url: str, cookies_file: str | None,
     return ids
 
 
+def get_playlist_title(url: str, cookies_file: str | None,
+                       bgutil_url: str) -> str:
+    if is_single_video_url(url):
+        return ""
+
+    youtube_extractor_args_value, bgutil_extractor_args_value = youtube_extractor_args(
+        bgutil_url, use_web_music=bool(bgutil_url))
+    cmd = [
+        "yt-dlp",
+        "--flat-playlist",
+        "--playlist-items", "1",
+        "--print", "%(playlist_title)s",
+        "--no-warnings",
+        "--js-runtimes", "deno",
+        "--remote-components", "ejs:github",
+        "--extractor-args", youtube_extractor_args_value,
+    ]
+    if bgutil_extractor_args_value:
+        cmd += ["--extractor-args", bgutil_extractor_args_value]
+    if cookies_file and Path(cookies_file).exists():
+        cmd += ["--cookies", cookies_file]
+    cmd += [url]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return ""
+    for line in result.stdout.splitlines():
+        value = line.strip()
+        if value:
+            return value
+    return ""
+
+
 # ── Disk scan ──────────────────────────────────────────────────────────────────
 
 def scan_files(output_dir: str) -> dict[str, str]:
@@ -394,10 +616,11 @@ def delete_removed(current_ids: list[str], on_disk: dict[str, str]) -> int:
 
 # ── Download ───────────────────────────────────────────────────────────────────
 
-def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
+def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str], str]:
     name        = cfg["name"]
     url         = cfg["url"]
     output_dir  = cfg["output_dir"]
+    playlist_dir = cfg.get("playlist_dir") or output_dir
     fmt         = cfg.get("format", "opus")
     cookies     = settings.get("cookies_file")
     archive_dir = settings["archive_dir"]
@@ -423,6 +646,7 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
 
     logger.info(f"  Отримую список...")
     current_ids = get_playlist_ids(url, cookies, bgutil_url)
+    playlist_title = get_playlist_title(url, cookies, bgutil_url) or name
 
     # Стан диску до скачування
     on_disk = load_path_map(path_map_file)
@@ -524,6 +748,16 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
         if mb_enabled and enrich_tags_from_musicbrainz(file_path, min_interval_sec=mb_min_interval):
             enriched_count += 1
 
+    art_source = _extract_playlist_artwork_from_tracks(on_disk_after, playlist_dir)
+    if _write_playlist_artwork(playlist_dir, art_source):
+        logger.info(f"  🖼 playlist artwork updated: {Path(playlist_dir).name}")
+    if art_source and art_source.name == ".playlist-artwork.jpg" and art_source.exists():
+        art_source.unlink(missing_ok=True)
+
+    removed_sidecars = _cleanup_track_sidecar_thumbnails(on_disk_after)
+    if removed_sidecars:
+        logger.info(f"  🧹 removed track sidecar thumbnails: {removed_sidecars}")
+
     if fixed_albumartist:
         logger.info(f"  ✅ albumartist виправлено: {fixed_albumartist}")
     if mb_enabled:
@@ -533,25 +767,26 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
     if new_count > 0:
         logger.info(f"  ✅ Нових треків: {new_count}")
 
-    return on_disk_after, current_ids
+    return on_disk_after, current_ids, playlist_title
 
 
 # ── m3u ────────────────────────────────────────────────────────────────────────
 
 def generate_m3u(name: str, current_ids: list[str],
-                 on_disk: dict[str, str], playlists_dir: str) -> str:
-    m3u_path = Path(playlists_dir) / f"{name}.m3u"
-    lines = ["#EXTM3U\n"]
+                 on_disk: dict[str, str], playlist_dir: str,
+                 playlist_title: str = "") -> str:
+    m3u_path = Path(playlist_dir) / f"{name}.m3u"
+    lines = ["#EXTM3U\n", f"#PLAYLIST:{playlist_title or name}\n"]
     found = missing = 0
 
     for vid in current_ids:
         fp = on_disk.get(vid)
         if fp and Path(fp).exists():
-            rel   = os.path.relpath(fp, playlists_dir)
-            # Прибрати ведучий номер і розширення файлу для чистої назви в M3U.
-            title = Path(fp).stem
-            title = re.sub(r'^\d{3}\s*-\s*', '', title)
-            lines += [f"#EXTINF:-1,{title}\n", f"{rel}\n"]
+            rel = os.path.basename(fp)
+            lines.extend(
+                line + "\n"
+                for line in _playlist_item_lines(fp, rel, vid)
+            )
             found += 1
         else:
             missing += 1
@@ -597,7 +832,7 @@ def main():
 
     cfg      = load_config()
     settings = cfg.get("settings", {})
-    ensure_dirs(settings["playlists_dir"], settings["archive_dir"])
+    ensure_dirs(*(p for p in [settings.get("playlists_dir"), settings["archive_dir"]] if p))
 
     pot_url = normalize_pot_url(str(settings.get("pot_server_url") or ""))
     check_pot_server(pot_url)
@@ -606,9 +841,10 @@ def main():
     for playlist in cfg.get("playlists", []):
         logger.info(f"\n▶  {playlist['name']}")
         try:
-            on_disk, ids = download_playlist(playlist, settings)
+            on_disk, ids, playlist_title = download_playlist(playlist, settings)
             generate_m3u(playlist["name"], ids, on_disk,
-                         settings["playlists_dir"])
+                         playlist.get("playlist_dir") or playlist["output_dir"],
+                         playlist_title)
         except Exception as e:
             logger.exception(f"  ПОМИЛКА обробки плейліста {playlist['name']}: {e}")
             errors.append(playlist["name"])

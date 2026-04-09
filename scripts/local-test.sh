@@ -50,7 +50,6 @@ playlists:
     format: opus
 
 settings:
-  playlists_dir: /music/playlists
   archive_dir: /music/.sync
   cookies_file: /config/cookies.txt
   sleep_interval: 1
