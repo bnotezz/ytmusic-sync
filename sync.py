@@ -13,6 +13,8 @@ import logging
 import subprocess
 import urllib.request
 import urllib.error
+import urllib.parse
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -69,6 +71,20 @@ def ensure_dirs(*paths):
 
 VIDEOID_RE = re.compile(r'\[([A-Za-z0-9_-]{11})\]\.(opus|m4a|mp3|ogg)$')
 VIDEO_URL_ID_RE = re.compile(r'(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})')
+MUSICBRAINZ_USER_AGENT = "ytmusic-sync/1.0 (self-hosted)"
+MUSICBRAINZ_WS_URL = "https://musicbrainz.org/ws/2/recording/"
+_MB_LAST_REQUEST_TS = 0.0
+_MB_CACHE: dict[tuple[str, str], dict] = {}
+
+
+def as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+    return False
 
 
 # ── Playlist IDs ───────────────────────────────────────────────────────────────
@@ -130,6 +146,157 @@ def strip_opus_language_tag(file_path: str) -> bool:
     except Exception as e:
         logger.warning(f"  language tag skip: {path.name} → {e}")
     return False
+
+
+def ensure_albumartist_tag(file_path: str) -> bool:
+    try:
+        import mutagen
+    except Exception as e:
+        logger.info(f"  albumartist skip: mutagen unavailable ({e})")
+        return False
+
+    path = Path(file_path)
+    if not path.exists():
+        return False
+
+    try:
+        audio = mutagen.File(str(path), easy=True)
+        if audio is None:
+            return False
+        if audio.tags is None:
+            audio.add_tags()
+
+        tags = audio.tags
+        if tags.get("albumartist"):
+            return False
+
+        artists = tags.get("artist", [])
+        if not artists:
+            return False
+
+        tags["albumartist"] = list(artists)
+        audio.save()
+        logger.info(f"  🏷 albumartist fixed: {path.name}")
+        return True
+    except Exception as e:
+        logger.warning(f"  albumartist skip: {path.name} → {e}")
+        return False
+
+
+def _normalize_mb_text(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _musicbrainz_lookup(artist: str, title: str, min_interval_sec: float = 1.1) -> dict:
+    global _MB_LAST_REQUEST_TS
+
+    key = (_normalize_mb_text(artist), _normalize_mb_text(title))
+    cached = _MB_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    now = time.monotonic()
+    elapsed = now - _MB_LAST_REQUEST_TS
+    if elapsed < min_interval_sec:
+        time.sleep(min_interval_sec - elapsed)
+
+    query = f'recording:"{title}" AND artist:"{artist}"'
+    params = urllib.parse.urlencode({"query": query, "fmt": "json", "limit": 5})
+    req = urllib.request.Request(
+        f"{MUSICBRAINZ_WS_URL}?{params}",
+        headers={"User-Agent": MUSICBRAINZ_USER_AGENT},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8", errors="replace"))
+            _MB_LAST_REQUEST_TS = time.monotonic()
+
+        recordings = data.get("recordings") or []
+        if not recordings:
+            _MB_CACHE[key] = {}
+            return {}
+
+        recordings = sorted(recordings, key=lambda x: int(x.get("score") or 0), reverse=True)
+        best = recordings[0]
+        if int(best.get("score") or 0) < 85:
+            _MB_CACHE[key] = {}
+            return {}
+        _MB_CACHE[key] = best
+        return best
+    except urllib.error.HTTPError as e:
+        logger.warning(f"  MusicBrainz HTTP skip: {e}")
+    except urllib.error.URLError as e:
+        logger.warning(f"  MusicBrainz network skip: {e}")
+    except Exception as e:
+        logger.warning(f"  MusicBrainz unexpected skip: {e}")
+
+    _MB_CACHE[key] = {}
+    return {}
+
+
+def enrich_tags_from_musicbrainz(file_path: str, min_interval_sec: float = 1.1) -> bool:
+    try:
+        import mutagen
+    except Exception as e:
+        logger.info(f"  MusicBrainz skip: mutagen unavailable ({e})")
+        return False
+
+    path = Path(file_path)
+    if not path.exists():
+        return False
+
+    try:
+        audio = mutagen.File(str(path), easy=True)
+        if audio is None:
+            return False
+        if audio.tags is None:
+            audio.add_tags()
+
+        tags = audio.tags
+        if tags.get("musicbrainz_recordingid"):
+            return False
+
+        artist = (tags.get("artist", [""]) or [""])[0].strip()
+        title = (tags.get("title", [""]) or [""])[0].strip()
+        if not artist or not title:
+            return False
+
+        rec = _musicbrainz_lookup(artist, title, min_interval_sec=min_interval_sec)
+        if not rec or not rec.get("id"):
+            return False
+
+        changed = False
+        if not tags.get("musicbrainz_recordingid"):
+            tags["musicbrainz_recordingid"] = [rec["id"]]
+            changed = True
+
+        artists = rec.get("artist-credit") or []
+        artist_ids = [a.get("artist", {}).get("id") for a in artists if a.get("artist", {}).get("id")]
+        if artist_ids and not tags.get("musicbrainz_artistid"):
+            tags["musicbrainz_artistid"] = artist_ids
+            changed = True
+
+        releases = rec.get("releases") or []
+        if releases:
+            rel = releases[0]
+            if rel.get("id") and not tags.get("musicbrainz_albumid"):
+                tags["musicbrainz_albumid"] = [rel["id"]]
+                changed = True
+            if rel.get("title") and not tags.get("album"):
+                tags["album"] = [rel["title"]]
+                changed = True
+            if rel.get("date") and not tags.get("date"):
+                tags["date"] = [rel["date"]]
+                changed = True
+
+        if changed:
+            audio.save()
+            logger.info(f"  🧠 MusicBrainz enriched: {path.name}")
+        return changed
+    except Exception as e:
+        logger.warning(f"  MusicBrainz skip: {path.name} → {e}")
+        return False
 
 def get_playlist_ids(url: str, cookies_file: str | None,
                      bgutil_url: str) -> list[str]:
@@ -236,6 +403,8 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
     archive_dir = settings["archive_dir"]
     sleep       = settings.get("sleep_interval", 2)
     bgutil_url  = normalize_pot_url(str(settings.get("pot_server_url") or ""))
+    mb_enabled  = as_bool(settings.get("musicbrainz_enrich", False))
+    mb_min_interval = float(settings.get("musicbrainz_min_interval_sec", 1.1))
     path_map_file = str(Path(archive_dir) / f"{name}.paths.tsv")
 
     ytdlp_archive = str(Path(archive_dir) / f"{name}.ytdlp.archive")
@@ -346,8 +515,20 @@ def download_playlist(cfg: dict, settings: dict) -> tuple[dict, list[str]]:
         logger.warning(f"  ⚠  yt-dlp код: {result.returncode}")
 
     on_disk_after = load_path_map(path_map_file)
+    fixed_albumartist = 0
+    enriched_count = 0
     for file_path in on_disk_after.values():
         strip_opus_language_tag(file_path)
+        if ensure_albumartist_tag(file_path):
+            fixed_albumartist += 1
+        if mb_enabled and enrich_tags_from_musicbrainz(file_path, min_interval_sec=mb_min_interval):
+            enriched_count += 1
+
+    if fixed_albumartist:
+        logger.info(f"  ✅ albumartist виправлено: {fixed_albumartist}")
+    if mb_enabled:
+        logger.info(f"  ✅ MusicBrainz enrich: {enriched_count}")
+
     new_count = len(on_disk_after) - len(on_disk) + deleted
     if new_count > 0:
         logger.info(f"  ✅ Нових треків: {new_count}")

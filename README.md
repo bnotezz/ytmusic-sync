@@ -20,8 +20,10 @@
 2. Для кожного плейліста отримує актуальний список video ID.
 3. Видаляє локальні треки, яких більше немає в плейлісті.
 4. Дозавантажує нові треки через `yt-dlp` (audio only).
-5. Оновлює `.m3u` у папці `playlists_dir`.
-6. Повторює запуск за cron-розкладом `SYNC_SCHEDULE`.
+5. Нормалізує теги (прибирає `language` для opus, додає `albumartist`, якщо його немає).
+6. Опційно робить enrich метаданих через MusicBrainz.
+7. Оновлює `.m3u` у папці `playlists_dir`.
+8. Повторює запуск за cron-розкладом `SYNC_SCHEDULE`.
 
 ## Linuxserver-style runtime
 
@@ -136,8 +138,12 @@ settings:
   archive_dir: /music/.sync
   cookies_file: /config/cookies.txt
   sleep_interval: 2
+  musicbrainz_enrich: false
+  musicbrainz_min_interval_sec: 1.1
   pot_server_url: "http://192.168.50.192:4416" # або "" для вимкнення
 ```
+
+`musicbrainz_enrich: true` увімкне доповнення тегів (`musicbrainz_recordingid`, `musicbrainz_artistid`, `musicbrainz_albumid`, а також `album/date` якщо бракує).
 
 ## Параметри середовища (`docker-compose.yml`)
 

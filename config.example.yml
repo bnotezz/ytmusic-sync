@@ -27,6 +27,8 @@ settings:
   archive_dir:   /music/.sync
   cookies_file:  /config/cookies.txt
   sleep_interval: 2
+  musicbrainz_enrich: false
+  musicbrainz_min_interval_sec: 1.1
 
   # Єдине місце налаштування POT ("" = вимкнено)
   pot_server_url: "http://127.0.0.1:4416"
