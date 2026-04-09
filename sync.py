@@ -832,7 +832,10 @@ def main():
 
     cfg      = load_config()
     settings = cfg.get("settings", {})
-    ensure_dirs(*(p for p in [settings.get("playlists_dir"), settings["archive_dir"]] if p))
+    archive_dir = settings.get("archive_dir")
+    if not archive_dir:
+        raise KeyError("archive_dir")
+    ensure_dirs(archive_dir)
 
     pot_url = normalize_pot_url(str(settings.get("pot_server_url") or ""))
     check_pot_server(pot_url)
