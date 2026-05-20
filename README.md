@@ -90,7 +90,7 @@ id <synology_user>
 Приклади:
 
 - `pot_server_url: "http://127.0.0.1:4416"`
-- `pot_server_url: "http://192.168.50.192:4416"`
+- `pot_server_url: "http://192.168.1.1:4416"`
 - `pot_server_url: ""` (вимкнено)
 
 ### 5A. Варіант через Synology Container Manager (Project Create)
@@ -141,7 +141,7 @@ settings:
   sleep_interval: 2
   musicbrainz_enrich: false
   musicbrainz_min_interval_sec: 1.1
-  pot_server_url: "http://192.168.50.192:4416" # або "" для вимкнення
+  pot_server_url: "http://192.168.1.1:4416" # або "" для вимкнення
 ```
 
 За замовчуванням `.m3u` пишеться в `output_dir` кожного плейліста. Якщо треба іншу папку, додай `playlist_dir` у відповідний елемент `playlists`.

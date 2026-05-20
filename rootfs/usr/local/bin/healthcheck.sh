@@ -7,7 +7,9 @@ command -v yt-dlp >/dev/null 2>&1 || exit 1
 command -v ffmpeg >/dev/null 2>&1 || exit 1
 command -v deno >/dev/null 2>&1 || exit 1
 
-crontab -l -u root >/dev/null 2>&1 || exit 1
+if [ "${DISABLE_CRON:-0}" != "1" ]; then
+    pgrep -f "supercronic /app/crontab" >/dev/null 2>&1 || exit 1
+fi
 
 POT_SERVER_URL="$(python - <<'PY'
 from pathlib import Path

@@ -1,7 +1,6 @@
 services:
   ytmusic-sync:
-    build: .
-    image: ytmusic-sync:latest
+    image: ghcr.io/bnotezz/ytmusic-sync:latest
     container_name: ytmusic-sync
     platform: linux/amd64
     restart: unless-stopped

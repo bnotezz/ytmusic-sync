@@ -1,4 +1,4 @@
 # Default crontab for ytmusic-sync (used by supercronic inside container)
 # Format: <cron spec> <command>
 # By default runs weekly at 03:00 every day. Edit as needed or set SYNC_SCHEDULE env.
-0 3 * * * gosu abc python -u /app/sync.py >> /config/sync.log 2>&1
+0 3 * * * gosu abc python -u /usr/local/bin/run-sync-logged.py

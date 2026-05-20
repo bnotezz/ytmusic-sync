@@ -41,7 +41,7 @@ else
 	echo "[service] POT disabled (settings.pot_server_url is empty)" | tee -a "$LOG_FILE"
 fi
 echo "[service] first sync -> ${LOG_FILE}"
-gosu abc python /app/sync.py >> "$LOG_FILE" 2>&1
+	gosu abc python -u /usr/local/bin/run-sync-logged.py
 
 if [ "$DISABLE_CRON" = "1" ]; then
 	echo "[service] cron disabled (DISABLE_CRON=1); keeping container alive for local debugging"
@@ -50,7 +50,7 @@ fi
 
 # Create a crontab file for supercronic (uses unbuffered python for realtime logs)
 cat > /app/crontab <<EOF
-${SCHEDULE} gosu abc python -u /app/sync.py >> ${LOG_FILE} 2>&1
+${SCHEDULE} gosu abc python -u /usr/local/bin/run-sync-logged.py
 EOF
 chown abc:abc /app/crontab 2>/dev/null || true
 echo "[service] wrote /app/crontab ->"
