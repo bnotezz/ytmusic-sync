@@ -888,6 +888,10 @@ def main():
     logger.info("ytmusic-sync старт")
     logger.info(sep)
 
+    # Inform if Healthchecks is disabled (no UUID provided)
+    if not HC_UUID:
+        logger.info("HEALTHCHECKS_UUID не задано — Healthchecks вимкнено")
+
     ping_start()
 
     cfg      = load_config()
