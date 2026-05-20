@@ -2,8 +2,7 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [ main ]
-    # Скрипт також спрацює, якщо ви створите тег версії в Git (наприклад, v1.2.3)
+    # Тепер скрипт запускається ТІЛЬКИ коли ви створюєте тег версії (наприклад, v1.0.0)
     tags: [ 'v*.*.*' ]
 
 env:
@@ -28,12 +27,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # Робить тег 'latest' для головної гілки
-            type=edge,branch=main,value=latest
-            # Створює тег на основі версії Git-тегу (v1.0.0 -> 1.0.0)
+            # Створює чистий цифровий тег (v1.2.3 -> 1.2.3)
             type=semver,pattern={{version}}
-            # Створює унікальний тег з назвою гілки та коротким SHA коміту (наприклад: main-a1b2c3d)
-            type=sha,prefix=${{ github.ref_name }}-,format=short
+            # Робить цей же образ останнім (latest), щоб WUD на Synology знав, що це найновіший реліз
+            type=raw,value=latest
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -42,12 +39,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. Збирання з використанням згенерованих тегів
+      # 2. Збирання з використанням правильних тегів (через steps)
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          # Передаємо згенеровані вище теги в процес збирання
-          tags: ${{ id.meta.outputs.tags }}
-          labels: ${{ id.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
