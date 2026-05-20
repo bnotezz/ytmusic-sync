@@ -13,14 +13,18 @@ services:
       - /volume1/music/kids:/music
 
     environment:
-      - PUID=1026
-      - PGID=100
-      - SYNC_SCHEDULE=0 3 * * 0
-      - TZ=Europe/Kyiv
+      PUID: 1026
+      PGID: 100
+      # Centralised cron schedule. Change only here.
+      SYNC_SCHEDULE: "0 3 * * *"
+      TZ: "Europe/Kyiv"
+      # Healthchecks: set your ping UUID here to enable external monitoring
+      # Create a check at https://healthchecks.io/ and paste the UUID below
+      HEALTHCHECKS_UUID: "your-healthchecks-uuid-here"
 
       # Home Assistant event after sync (optional)
-      # - HA_URL=http://192.168.1.100:8123
-      # - HA_TOKEN=eyJhbGciOiJ...
+      # HA_URL: "http://192.168.1.100:8123"
+      # HA_TOKEN: "eyJhbGciOiJ..."
 
     logging:
       driver: json-file

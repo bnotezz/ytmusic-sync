@@ -1,7 +1,7 @@
 #!/command/with-contenv sh
 set -eu
 
-SCHEDULE="${SYNC_SCHEDULE:-0 3 * * 0}"
+SCHEDULE="${SYNC_SCHEDULE:-0 3 * * *}"
 LOG_FILE="/config/sync.log"
 DISABLE_CRON="${DISABLE_CRON:-0}"
 
@@ -48,7 +48,13 @@ if [ "$DISABLE_CRON" = "1" ]; then
 	exec tail -f /dev/null
 fi
 
-echo "${SCHEDULE} gosu abc python /app/sync.py >> ${LOG_FILE} 2>&1" | crontab -u root -
-echo "[service] cron started"
+# Create a crontab file for supercronic (uses unbuffered python for realtime logs)
+cat > /app/crontab <<EOF
+${SCHEDULE} gosu abc python -u /app/sync.py >> ${LOG_FILE} 2>&1
+EOF
+chown abc:abc /app/crontab 2>/dev/null || true
+echo "[service] wrote /app/crontab ->"
+sed -n '1,120p' /app/crontab
+echo "[service] starting supercronic with /app/crontab"
 
-exec cron -f
+exec /usr/local/bin/supercronic /app/crontab

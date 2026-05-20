@@ -28,6 +28,64 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# --- Healthchecks integration -------------------------------------------------
+HC_UUID = os.environ.get("HEALTHCHECKS_UUID") or ""
+PING_BASE = f"https://hc-ping.com/{HC_UUID}" if HC_UUID else None
+
+try:
+    import requests
+except Exception:
+    requests = None
+
+
+def _hc_get(url: str, timeout: int = 10):
+    try:
+        if requests:
+            requests.get(url, timeout=timeout)
+        else:
+            with urllib.request.urlopen(url, timeout=timeout):
+                pass
+    except Exception as e:
+        logger.warning(f"Healthchecks GET failed: {e}")
+
+
+def _hc_post(url: str, data: bytes | None = None, timeout: int = 10):
+    try:
+        if requests:
+            requests.post(url, data=data, timeout=timeout)
+        else:
+            req = urllib.request.Request(url, data=data or b"", method="POST")
+            urllib.request.urlopen(req, timeout=timeout)
+    except Exception as e:
+        logger.warning(f"Healthchecks POST failed: {e}")
+
+
+def ping_start():
+    if not PING_BASE:
+        return
+    _hc_get(f"{PING_BASE}/start")
+
+
+def ping_success(message: str = ""):
+    if not PING_BASE:
+        return
+    if message:
+        _hc_post(PING_BASE, data=message.encode("utf-8"))
+    else:
+        _hc_get(PING_BASE)
+
+
+def ping_failure(message: str = ""):
+    if not PING_BASE:
+        return
+    if message:
+        _hc_post(f"{PING_BASE}/fail", data=message.encode("utf-8"))
+    else:
+        _hc_get(f"{PING_BASE}/fail")
+
+# ----------------------------------------------------------------------------
+
+
 def normalize_pot_url(raw: str) -> str:
     value = (raw or "").strip()
     if not value or "NAS_IP" in value or "ЗАМІНИТИ" in value:
@@ -830,6 +888,8 @@ def main():
     logger.info("ytmusic-sync старт")
     logger.info(sep)
 
+    ping_start()
+
     cfg      = load_config()
     settings = cfg.get("settings", {})
     archive_dir = settings.get("archive_dir")
@@ -841,6 +901,8 @@ def main():
     check_pot_server(pot_url)
 
     errors = []
+    total_playlists = 0
+    total_tracks = 0
     for playlist in cfg.get("playlists", []):
         logger.info(f"\n▶  {playlist['name']}")
         try:
@@ -848,6 +910,11 @@ def main():
             generate_m3u(playlist["name"], ids, on_disk,
                          playlist.get("playlist_dir") or playlist["output_dir"],
                          playlist_title)
+            total_playlists += 1
+            try:
+                total_tracks += len(ids or [])
+            except Exception:
+                pass
         except Exception as e:
             logger.exception(f"  ПОМИЛКА обробки плейліста {playlist['name']}: {e}")
             errors.append(playlist["name"])
@@ -855,11 +922,19 @@ def main():
     trigger_ha_event()
 
     logger.info(f"\n{sep}")
+    summary = (
+        f"Синхронізація завершена. playlists_processed={total_playlists}, "
+        f"tracks_processed={total_tracks}, failures={len(errors)}"
+    )
     if errors:
         logger.info(f"Завершено з помилками: {', '.join(errors)}")
+        logger.info(summary)
+        ping_failure(summary + "\nFailed playlists: " + ", ".join(errors))
         sys.exit(1)
     else:
         logger.info("Синхронізація успішно завершена")
+        logger.info(summary)
+        ping_success(summary)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 ARG S6_OVERLAY_VERSION=3.2.1.0
 ARG TARGETARCH
 ARG YTDLP_PIP_SPEC=yt-dlp
+ARG SUPERCRONIC_VERSION=0.2.33
 
 # ffmpeg (pre-built binary, no compilation)
 ARG FFMPEG_URL=https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
@@ -45,6 +46,20 @@ RUN set -eux; \
             ARCH="$(dpkg --print-architecture)"; \
         fi; \
         case "$ARCH" in \
+            amd64) SC_ARCH="linux-amd64" ;; \
+            arm64) SC_ARCH="linux-arm64" ;; \
+            *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
+        esac; \
+        curl -fsSL -o /usr/local/bin/supercronic "https://github.com/aptible/supercronic/releases/download/v${SUPERCRONIC_VERSION}/supercronic-${SC_ARCH}"; \
+        chmod +x /usr/local/bin/supercronic; \
+        echo "supercronic: $(/usr/local/bin/supercronic --version 2>/dev/null || echo 'installed')"
+
+RUN set -eux; \
+        ARCH="${TARGETARCH:-}"; \
+        if [ -z "$ARCH" ]; then \
+            ARCH="$(dpkg --print-architecture)"; \
+        fi; \
+        case "$ARCH" in \
             amd64) S6_ARCH="x86_64" ;; \
             arm64) S6_ARCH="aarch64" ;; \
             *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
@@ -59,7 +74,8 @@ RUN pip install --no-cache-dir \
     "${YTDLP_PIP_SPEC}" \
     "mutagen>=1.47.0" \
     "pyyaml>=6.0.2" \
-    "bgutil-ytdlp-pot-provider>=1.3.1"
+    "bgutil-ytdlp-pot-provider>=1.3.1" \
+    "requests>=2.31.0"
 
 RUN yt-dlp --version && deno --version
 

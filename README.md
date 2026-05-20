@@ -152,10 +152,20 @@ settings:
 
 - `PUID` - UID користувача-власника файлів.
 - `PGID` - GID групи-власника файлів.
-- `SYNC_SCHEDULE` - cron, за замовчуванням `0 3 * * 0`.
+- `SYNC_SCHEDULE` - cron, за замовчуванням `0 3 * * *`.
 - `TZ` - часовий пояс.
 - `HA_URL` - optional Home Assistant URL.
 - `HA_TOKEN` - optional Home Assistant Long-lived token.
+
+## Healthchecks integration
+
+If you use Healthchecks.io for uptime/monitoring, set `HEALTHCHECKS_UUID` in `docker-compose.yml` (see example in `docker-compose.yml`). The container sends three pings per run:
+
+- `https://hc-ping.com/<UUID>/start` at the beginning of the sync
+- `https://hc-ping.com/<UUID>` on success (POST body contains a short summary)
+- `https://hc-ping.com/<UUID>/fail` on failure (POST body contains error details)
+
+This provides alerts when the container silent-fails or when a sync run fails.
 
 POT налаштовується тільки через `settings.pot_server_url` у `/config/config.yml`.
 
