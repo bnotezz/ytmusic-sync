@@ -1,32 +1,19 @@
 services:
   ytmusic-sync:
-    image: ghcr.io/bnotezz/ytmusic-sync:latest
+    build: .
+    image: ${YTMUSIC_SYNC_IMAGE:-ytmusic-sync:latest}
     container_name: ytmusic-sync
     platform: linux/amd64
-    restart: unless-stopped
-    privileged: true
+    restart: "no"
     network_mode: host
-
     volumes:
-      - /volume1/docker/ytmusic-sync/config:/config
-      - /volume1/music/kids:/music
-
+      - ${SYNC_CONFIG_PATH:-/volume1/docker/ytmusic-sync/config}:/config
+      - ${SYNC_MUSIC_PATH:-/volume1/music/kids}:/music
     environment:
-      PUID: 1026
-      PGID: 100
-      # Centralised cron schedule. Change only here.
-      SYNC_SCHEDULE: "0 3 * * *"
-      TZ: "Europe/Kyiv"
-      # Healthchecks: set your ping UUID here to enable external monitoring
-      # Create a check at https://healthchecks.io/ and paste the UUID below
-      HEALTHCHECKS_UUID: "your-healthchecks-uuid-here"
-
+      PUID: ${SYNC_PUID:-1026}
+      PGID: ${SYNC_PGID:-100}
+      TZ: ${TZ:-Europe/Kyiv}
+      HEALTHCHECKS_UUID: ${HEALTHCHECKS_UUID:-your-healthchecks-uuid-here}
       # Home Assistant event after sync (optional)
       # HA_URL: "http://192.168.1.100:8123"
       # HA_TOKEN: "eyJhbGciOiJ..."
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
