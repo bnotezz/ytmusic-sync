@@ -1,4 +1,4 @@
-#!/command/with-contenv sh
+#!/usr/bin/env sh
 set -eu
 
 PUID="${PUID:-1000}"
@@ -9,14 +9,8 @@ echo "[init] PUID=${PUID} PGID=${PGID}"
 groupmod -o -g "${PGID}" abc 2>/dev/null || true
 usermod -o -u "${PUID}" abc 2>/dev/null || true
 
-mkdir -p /config /music /app
-mkdir -p /config/.cache
-
-# Keep startup fast on NAS with large music libraries: do not chown recursively.
-chown abc:abc /config /music 2>/dev/null || true
-chown abc:abc /config/.cache 2>/dev/null || true
-touch /config/sync.log 2>/dev/null || true
-chown abc:abc /config/sync.log 2>/dev/null || true
+mkdir -p /config /music /app /config/.cache
+chown abc:abc /config /music /config/.cache 2>/dev/null || true
 
 if [ ! -f /config/config.yml ]; then
   echo "[init] /config/config.yml not found"
@@ -25,12 +19,17 @@ if [ ! -f /config/config.yml ]; then
 fi
 
 ln -sf /config/config.yml /app/config.yml
+
 if [ -f /config/cookies.txt ]; then
-  echo "[init] Fixing /config/cookies.txt permissions..."
   chown abc:abc /config/cookies.txt 2>/dev/null || true
   chmod 664 /config/cookies.txt 2>/dev/null || true
   ln -sf /config/cookies.txt /app/cookies.txt
-else
-  echo "[init] /config/cookies.txt not found - yt-dlp will work without cookies"
-  echo "[init]    To use private YouTube Music playlists, add cookies.txt to /config/"
 fi
+
+export XDG_CACHE_HOME="/config/.cache"
+
+if [ "$#" -gt 0 ]; then
+  exec gosu abc "$@"
+fi
+
+exec gosu abc python -u /usr/local/bin/run-sync-logged.py

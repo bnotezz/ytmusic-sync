@@ -12,7 +12,6 @@
 - yt-dlp: latest на момент збірки образу
 - ffmpeg: latest static build з `yt-dlp/FFmpeg-Builds` на момент збірки
 - Deno: latest stable runtime на момент збірки
-- s6-overlay: `3.2.1.0`
 
 ## Як працює
 
@@ -24,24 +23,18 @@
 6. Опційно робить enrich метаданих через MusicBrainz.
 7. Записує `.m3u` поруч із файлами плейліста та створює `folder.jpg` / `cover.jpg` у тій самій папці.
 8. У `.m3u` додає MA-friendly metadata (`#PLAYLIST`, `#EXTMA`, `#EXTARTIST`, `#EXTALBUM`, `#EXTIMG`) включно з оригінальним YT Music URL треку.
-9. Повторює запуск за cron-розкладом `SYNC_SCHEDULE`.
+9. Повторює запуск за розкладом через зовнішній scheduler, наприклад Synology Task Scheduler.
 
-## Linuxserver-style runtime
+## Runtime модель
 
-Контейнер запускається через `s6-overlay` (`/init`):
+Проєкт має 1 роль:
 
-1. `cont-init.d`:
-- застосовує `PUID/PGID` до користувача `abc`;
-- перевіряє наявність `/config/config.yml`;
-- створює symlink `/app/config.yml`.
+1. `ytmusic-sync` — one-shot worker:
+- готує runtime (`PUID/PGID`, `/config`, `/music`, symlink `/app/config.yml`);
+- запускає один sync (`python -u /usr/local/bin/run-sync-logged.py`);
+- завершує роботу.
 
-2. `services.d/ytmusic-sync`:
-- робить перший sync при старті;
-- ставить cron job;
-- тримає контейнер у foreground через `cron -f`.
-
-3. `HEALTHCHECK`:
-- перевіряє конфіг, symlink і доступність `yt-dlp`, `ffmpeg`, `node`.
+Розклад робиться зовні, через Synology Task Scheduler або інший зовнішній scheduler.
 
 ## Залежності в контейнері
 
@@ -50,7 +43,6 @@
 - `ffmpeg` (готовий static build, без компіляції)
 - `nodejs` (JS runtime для yt-dlp)
 - `bgutil-ytdlp-pot-provider` python plugin
-- `deno` (JS runtime для yt-dlp)
 - `deno` (JS runtime для yt-dlp)
 
 ## Швидкий старт (Synology)
@@ -69,7 +61,6 @@ cp config.example.yml /volume1/docker/ytmusic-sync/config/config.yml
 ```
 
 В `config.yml` заміни `url` на свої YouTube Music playlist URL.
-Для локального тесту контейнер запускається з мінімальним профілем yt-dlp, щоб швидше ізолювати проблеми з POT / JS runtime / metadata.
 Для локального тесту контейнер запускається з мінімальним профілем yt-dlp, щоб швидше ізолювати проблеми з POT / JS runtime / metadata.
 ### 3. Налаштуй PUID/PGID
 
@@ -102,17 +93,37 @@ id <synology_user>
 5. Натисни `Next` -> `Done` (або `Create`) -> `Build and start`.
 6. Відкрий логи контейнера `ytmusic-sync` у UI та перевір перший sync.
 
-### 5B. Варіант через SSH / docker compose
+### 5B. Варіант через Synology Task Scheduler
+
+Створи задачу, яка запускає один sync:
+
+```bash
+cd /volume1/docker/ytmusic-sync && docker compose run --rm ytmusic-sync
+```
+
+Якщо хочеш запускати через окрему оболонку без compose, можна використати:
+
+```bash
+docker run --rm --network host \
+  -e PUID=1026 -e PGID=100 -e TZ=Europe/Kyiv \
+  -e HEALTHCHECKS_UUID=40e59f6c-b023-4755-b2cd-ce784a3c08d4 \
+  -v /volume1/docker/ytmusic-sync/config:/config \
+  -v /volume1/music/kids:/music \
+  ytmusic-sync:latest
+```
+
+### 5C. Варіант через SSH / docker compose
 
 ```bash
 cd /volume1/docker/ytmusic-sync
-docker compose up -d --build
-docker compose logs -f ytmusic-sync
+docker compose run --rm ytmusic-sync
 ```
 
 ## Docker Compose схема
 
 У `docker-compose.yml` запускається тільки `ytmusic-sync`.
+
+Зовнішній scheduler викликає `docker compose run --rm ytmusic-sync` за розкладом.
 
 `bgutil-ytdlp-pot-provider` залишається зовнішнім сервісом.
 
@@ -120,7 +131,7 @@ docker compose logs -f ytmusic-sync
 
 - `/config/config.yml` - основний конфіг.
 - `/config/cookies.txt` - optional cookies для приватних плейлістів.
-- `/config/sync.log` - лог cron-запусків.
+- `/config/sync.log` - персистентний лог запусків sync.
 - `/music/<playlist_dir>` - аудіофайли.
 - `/music/<playlist_dir>/*.m3u` - згенерований плейліст поруч із файлами.
 - `/music/<playlist_dir>/folder.jpg` / `/music/<playlist_dir>/cover.jpg` - thumbnail для Kodi / Music Assistant.
@@ -150,12 +161,24 @@ settings:
 
 ## Параметри середовища (`docker-compose.yml`)
 
-- `PUID` - UID користувача-власника файлів.
-- `PGID` - GID групи-власника файлів.
-- `SYNC_SCHEDULE` - cron, за замовчуванням `0 3 * * *`.
+- `SYNC_PUID` - UID користувача-власника файлів (`1026` за замовчуванням).
+- `SYNC_PGID` - GID групи-власника файлів (`100` за замовчуванням).
+- `SYNC_CONFIG_PATH` - шлях до config каталогу (`/volume1/docker/ytmusic-sync/config`).
+- `SYNC_MUSIC_PATH` - шлях до music каталогу (`/volume1/music/kids`).
 - `TZ` - часовий пояс.
+- `HEALTHCHECKS_UUID` - UUID для Healthchecks.io.
 - `HA_URL` - optional Home Assistant URL.
 - `HA_TOKEN` - optional Home Assistant Long-lived token.
+
+## Розклад через Synology
+
+Рекомендований шлях: Synology Task Scheduler запускає `docker compose run --rm ytmusic-sync`.
+
+Персистентний лог sync:
+
+```bash
+tail -n 200 /volume1/docker/ytmusic-sync/config/sync.log
+```
 
 ## Healthchecks integration
 
@@ -172,7 +195,7 @@ POT налаштовується тільки через `settings.pot_server_ur
 ## Ручний запуск синхронізації
 
 ```bash
-docker exec ytmusic-sync gosu abc python /app/sync.py
+docker compose run --rm ytmusic-sync
 ```
 
 ## Оновлення контейнера
@@ -201,7 +224,7 @@ docker compose up -d --build
 2. Встановлюються тільки потрібні пакети (`--no-install-recommends`).
 3. `npm` прибрано як зайва залежність для цього сценарію.
 4. `pip` встановлює залежності без cache (`--no-cache-dir`).
-5. s6-init і сервіси додаються як lightweight runtime-шар без зміни логіки sync.
+5. Scheduler винесено назовні, worker-контейнер одноразовий і простіший у підтримці.
 
 Для швидких оновлень використовуй:
 
