@@ -10,7 +10,7 @@ services:
       - ${SYNC_CONFIG_PATH:-/volume1/docker/ytmusic-sync/config}:/config
       - ${SYNC_MUSIC_PATH:-/volume1/music/kids}:/music
     environment:
-      PUID: ${SYNC_PUID:-1026}
+      PUID: ${SYNC_PUID:-1001}
       PGID: ${SYNC_PGID:-100}
       TZ: ${TZ:-Europe/Kyiv}
       HEALTHCHECKS_UUID: ${HEALTHCHECKS_UUID:-your-healthchecks-uuid-here}

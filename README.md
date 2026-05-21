@@ -106,7 +106,7 @@ cd /volume1/docker/ytmusic-sync && docker compose run --rm ytmusic-sync
 ```bash
 docker run --rm --network host \
   -e PUID=1026 -e PGID=100 -e TZ=Europe/Kyiv \
-  -e HEALTHCHECKS_UUID=40e59f6c-b023-4755-b2cd-ce784a3c08d4 \
+  -e HEALTHCHECKS_UUID=df32dfdsf-fdsfdsf-4755-uhiuh-11111111111 \
   -v /volume1/docker/ytmusic-sync/config:/config \
   -v /volume1/music/kids:/music \
   ytmusic-sync:latest
